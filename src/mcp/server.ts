@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { env } from "../config.js";
-import { ensureOuraFresh } from "../oura/sync.js";
+import { ensureOuraFresh, getOuraSyncStatus } from "../oura/sync.js";
 import {
   comparePeriods,
   findAnomalies,
@@ -36,14 +36,32 @@ const dateString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD");
 
 export function createHealthMcpServer(userId = env.DEV_USER_ID) {
   const server = new McpServer(
-    { name: "personal-health-data", version: "0.3.0" },
+    { name: "personal-health-data", version: "0.4.0" },
     {
       instructions:
-        "Read-only personal health tools. Before serving health queries, the server refreshes Oura data when the local cache is older than 15 minutes. Report measurements and statistical trends accurately. Treat insufficient baseline data as uncertain and do not diagnose disease from wearable data."
+        "Read-only personal health tools. Before serving health queries, the server refreshes Oura data when the local cache is older than 15 minutes. The sync-status tool itself does not trigger a refresh. Report measurements and statistical trends accurately. Treat insufficient baseline data as uncertain and do not diagnose disease from wearable data."
     }
   );
 
   const refresh = () => ensureOuraFresh(userId, 15, 3, 90);
+
+  server.registerTool(
+    "get_sync_status",
+    {
+      title: "Get Oura sync status",
+      description:
+        "Returns Oura connection and cache freshness information without triggering a refresh, including last sync time, cache age, whether the next health query will auto-refresh, latest local data date, and cached record counts.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true, openWorldHint: false }
+    },
+    async () => {
+      const data = await getOuraSyncStatus(userId, 15);
+      return {
+        content: [{ type: "text", text: JSON.stringify(data) }],
+        structuredContent: data
+      };
+    }
+  );
 
   server.registerTool(
     "get_daily_health_summary",
