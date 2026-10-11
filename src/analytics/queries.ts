@@ -152,9 +152,12 @@ async function getMetricSnapshot(
   const absolute = baselineReady && latestValue != null && baselineMean != null
     ? latestValue - baselineMean
     : null;
-  const percent = absolute != null && baselineMean != null && baselineMean !== 0
-    ? (absolute / baselineMean) * 100
-    : null;
+  const percent =
+    absolute != null &&
+    baselineMean != null &&
+    baselineMean !== 0
+      ? (absolute / baselineMean) * 100
+      : null;
   const zScore = baselineReady && absolute != null && baselineStddev != null && baselineStddev > 0
     ? absolute / baselineStddev
     : null;
