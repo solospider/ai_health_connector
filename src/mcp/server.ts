@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { env } from "../config.js";
+import { ensureOuraFresh } from "../oura/sync.js";
 import {
   comparePeriods,
   findAnomalies,
@@ -35,22 +36,25 @@ const dateString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD");
 
 export function createHealthMcpServer(userId = env.DEV_USER_ID) {
   const server = new McpServer(
-    { name: "personal-health-data", version: "0.2.0" },
+    { name: "personal-health-data", version: "0.3.0" },
     {
       instructions:
-        "Read-only personal health tools. Report measurements and statistical trends accurately. Treat insufficient baseline data as uncertain and do not diagnose disease from wearable data."
+        "Read-only personal health tools. Before serving health queries, the server refreshes Oura data when the local cache is older than 15 minutes. Report measurements and statistical trends accurately. Treat insufficient baseline data as uncertain and do not diagnose disease from wearable data."
     }
   );
+
+  const refresh = () => ensureOuraFresh(userId, 15, 3, 90);
 
   server.registerTool(
     "get_daily_health_summary",
     {
       title: "Get daily health summary",
-      description: "Returns normalized Oura health metrics for one calendar day.",
+      description: "Returns normalized Oura health metrics for one calendar day. Refreshes stale Oura data automatically.",
       inputSchema: { date: dateString },
       annotations: { readOnlyHint: true, openWorldHint: false }
     },
     async ({ date }) => {
+      await refresh();
       const data = await getDailySummary(userId, date);
       return {
         content: [{ type: "text", text: data ? JSON.stringify(data) : `No synced data for ${date}` }],
@@ -63,7 +67,7 @@ export function createHealthMcpServer(userId = env.DEV_USER_ID) {
     "get_metric_trend",
     {
       title: "Get health metric trend",
-      description: "Returns daily values of one normalized wearable metric across a date range.",
+      description: "Returns daily values of one normalized wearable metric across a date range. Refreshes stale Oura data automatically.",
       inputSchema: {
         metric: metricEnum,
         start_date: dateString,
@@ -72,6 +76,7 @@ export function createHealthMcpServer(userId = env.DEV_USER_ID) {
       annotations: { readOnlyHint: true, openWorldHint: false }
     },
     async ({ metric, start_date, end_date }) => {
+      await refresh();
       const data = await getMetricTrend(userId, metric as Metric, start_date, end_date);
       return {
         content: [{ type: "text", text: JSON.stringify({ metric, start_date, end_date, data }) }],
@@ -84,7 +89,7 @@ export function createHealthMcpServer(userId = env.DEV_USER_ID) {
     "get_baseline",
     {
       title: "Get personal baseline",
-      description: "Calculates mean, median, standard deviation, min and max for one personal health metric.",
+      description: "Calculates mean, median, standard deviation, min and max for one personal health metric. Refreshes stale Oura data automatically.",
       inputSchema: {
         metric: metricEnum,
         days: z.number().int().min(7).max(365).default(90)
@@ -92,6 +97,7 @@ export function createHealthMcpServer(userId = env.DEV_USER_ID) {
       annotations: { readOnlyHint: true, openWorldHint: false }
     },
     async ({ metric, days }) => {
+      await refresh();
       const data = await getBaseline(userId, metric as Metric, days);
       return {
         content: [{ type: "text", text: JSON.stringify(data) }],
@@ -104,7 +110,7 @@ export function createHealthMcpServer(userId = env.DEV_USER_ID) {
     "compare_periods",
     {
       title: "Compare health periods",
-      description: "Compares the average of a health metric between two date ranges.",
+      description: "Compares the average of a health metric between two date ranges. Refreshes stale Oura data automatically.",
       inputSchema: {
         metric: metricEnum,
         period_a_start: dateString,
@@ -115,6 +121,7 @@ export function createHealthMcpServer(userId = env.DEV_USER_ID) {
       annotations: { readOnlyHint: true, openWorldHint: false }
     },
     async ({ metric, period_a_start, period_a_end, period_b_start, period_b_end }) => {
+      await refresh();
       const data = await comparePeriods(
         userId,
         metric as Metric,
@@ -135,7 +142,7 @@ export function createHealthMcpServer(userId = env.DEV_USER_ID) {
     {
       title: "Get health context",
       description:
-        "Returns a compact multi-metric personal health context with latest values, recent averages, personal baselines, and deviations. Baselines with fewer than 14 samples are explicitly marked insufficient.",
+        "Returns a compact multi-metric personal health context with latest values, recent averages, personal baselines, and deviations. Refreshes stale Oura data automatically. Baselines with fewer than 14 samples are explicitly marked insufficient.",
       inputSchema: {
         recent_days: z.number().int().min(1).max(30).default(7),
         baseline_days: z.number().int().min(14).max(365).default(90)
@@ -143,6 +150,7 @@ export function createHealthMcpServer(userId = env.DEV_USER_ID) {
       annotations: { readOnlyHint: true, openWorldHint: false }
     },
     async ({ recent_days, baseline_days }) => {
+      await refresh();
       const data = await getHealthContext(userId, recent_days, baseline_days, 14);
       return {
         content: [{ type: "text", text: JSON.stringify(data) }],
@@ -156,7 +164,7 @@ export function createHealthMcpServer(userId = env.DEV_USER_ID) {
     {
       title: "Find health metric anomalies",
       description:
-        "Finds current wearable metrics that differ materially from the user's personal baseline. Metrics with fewer than 14 baseline samples are not classified as anomalous.",
+        "Finds current wearable metrics that differ materially from the user's personal baseline. Refreshes stale Oura data automatically. Metrics with fewer than 14 baseline samples are not classified as anomalous.",
       inputSchema: {
         metrics: z.array(metricEnum).min(1).max(8).optional(),
         baseline_days: z.number().int().min(14).max(365).default(90),
@@ -166,6 +174,7 @@ export function createHealthMcpServer(userId = env.DEV_USER_ID) {
       annotations: { readOnlyHint: true, openWorldHint: false }
     },
     async ({ metrics, baseline_days, z_threshold, percent_threshold }) => {
+      await refresh();
       const selectedMetrics = (metrics as Metric[] | undefined) ?? defaultAnomalyMetrics;
       const data = await findAnomalies(
         userId,
