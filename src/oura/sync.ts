@@ -6,6 +6,18 @@ type Collection<T = Record<string, unknown>> = { data: T[]; next_token?: string 
 
 type AnyRecord = Record<string, any>;
 
+export type OuraFreshnessResult = {
+  status: "fresh" | "refreshed" | "not_connected" | "refresh_failed";
+  last_sync_at: string | null;
+  refreshed: boolean;
+  start?: string;
+  end?: string;
+  counts?: Record<string, number>;
+  error?: string;
+};
+
+const refreshInFlight = new Map<string, Promise<OuraFreshnessResult>>();
+
 async function fetchCollection(userId: string, endpoint: string, startDate: string, endDate: string) {
   const all: AnyRecord[] = [];
   let nextToken: string | undefined;
@@ -105,4 +117,87 @@ export async function syncOura(userId: string, startDate: string, endDate: strin
   }
   await db.query(`UPDATE connections SET last_sync_at=now() WHERE user_id=$1 AND provider='oura'`, [userId]);
   return counts;
+}
+
+function dateOnly(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+/**
+ * Keeps cached Oura data reasonably fresh for interactive MCP queries.
+ *
+ * - If the last sync is newer than maxAgeMinutes, no API call is made.
+ * - If stale, only the most recent recentDays calendar days are re-fetched.
+ * - If the connection has never been synced, initialSyncDays are fetched.
+ * - Concurrent tool calls share one refresh promise, avoiding duplicate Oura API traffic.
+ * - Refresh failures are reported to callers so cached data can still be used.
+ */
+export async function ensureOuraFresh(
+  userId: string,
+  maxAgeMinutes = 15,
+  recentDays = 3,
+  initialSyncDays = 90
+): Promise<OuraFreshnessResult> {
+  const existing = refreshInFlight.get(userId);
+  if (existing) return existing;
+
+  const work = (async (): Promise<OuraFreshnessResult> => {
+    const connection = await db.query(
+      `SELECT status, last_sync_at FROM connections WHERE user_id=$1 AND provider='oura' LIMIT 1`,
+      [userId]
+    );
+
+    if (!connection.rowCount) {
+      return { status: "not_connected", last_sync_at: null, refreshed: false };
+    }
+
+    const rawLastSync = connection.rows[0].last_sync_at as Date | string | null;
+    const lastSync = rawLastSync ? new Date(rawLastSync) : null;
+    const now = new Date();
+
+    if (lastSync && Number.isFinite(lastSync.getTime())) {
+      const ageMs = now.getTime() - lastSync.getTime();
+      if (ageMs < maxAgeMinutes * 60_000) {
+        return {
+          status: "fresh",
+          last_sync_at: lastSync.toISOString(),
+          refreshed: false
+        };
+      }
+    }
+
+    const end = dateOnly(now);
+    const daysToFetch = lastSync ? recentDays : initialSyncDays;
+    const startDate = new Date(now);
+    startDate.setUTCDate(startDate.getUTCDate() - Math.max(0, daysToFetch - 1));
+    const start = dateOnly(startDate);
+
+    try {
+      const counts = await syncOura(userId, start, end);
+      return {
+        status: "refreshed",
+        last_sync_at: new Date().toISOString(),
+        refreshed: true,
+        start,
+        end,
+        counts
+      };
+    } catch (error) {
+      return {
+        status: "refresh_failed",
+        last_sync_at: lastSync?.toISOString() ?? null,
+        refreshed: false,
+        start,
+        end,
+        error: error instanceof Error ? error.message : "Unknown Oura refresh error"
+      };
+    }
+  })();
+
+  refreshInFlight.set(userId, work);
+  try {
+    return await work;
+  } finally {
+    refreshInFlight.delete(userId);
+  }
 }
