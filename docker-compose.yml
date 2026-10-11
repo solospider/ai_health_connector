@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: health_ai
+    ports:
+      - "5432:5432"
+    volumes:
+      - health_ai_pg:/var/lib/postgresql/data
+
+volumes:
+  health_ai_pg:
