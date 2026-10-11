@@ -16,6 +16,19 @@ export type OuraFreshnessResult = {
   error?: string;
 };
 
+export type OuraSyncStatus = {
+  connected: boolean;
+  connection_status: string | null;
+  last_sync_at: string | null;
+  age_minutes: number | null;
+  cache_status: "fresh" | "stale" | "never_synced" | "not_connected";
+  refresh_threshold_minutes: number;
+  next_health_query_will_refresh: boolean;
+  refresh_in_flight: boolean;
+  latest_data_date: string | null;
+  cached_records: Record<string, number>;
+};
+
 const refreshInFlight = new Map<string, Promise<OuraFreshnessResult>>();
 
 async function fetchCollection(userId: string, endpoint: string, startDate: string, endDate: string) {
@@ -121,6 +134,69 @@ export async function syncOura(userId: string, startDate: string, endDate: strin
 
 function dateOnly(date: Date) {
   return date.toISOString().slice(0, 10);
+}
+
+export async function getOuraSyncStatus(userId: string, maxAgeMinutes = 15): Promise<OuraSyncStatus> {
+  const connection = await db.query(
+    `SELECT status, last_sync_at FROM connections WHERE user_id=$1 AND provider='oura' LIMIT 1`,
+    [userId]
+  );
+
+  if (!connection.rowCount) {
+    return {
+      connected: false,
+      connection_status: null,
+      last_sync_at: null,
+      age_minutes: null,
+      cache_status: "not_connected",
+      refresh_threshold_minutes: maxAgeMinutes,
+      next_health_query_will_refresh: false,
+      refresh_in_flight: refreshInFlight.has(userId),
+      latest_data_date: null,
+      cached_records: {}
+    };
+  }
+
+  const rawLastSync = connection.rows[0].last_sync_at as Date | string | null;
+  const lastSync = rawLastSync ? new Date(rawLastSync) : null;
+  const now = new Date();
+  const validLastSync = lastSync && Number.isFinite(lastSync.getTime()) ? lastSync : null;
+  const ageMinutes = validLastSync
+    ? Math.max(0, (now.getTime() - validLastSync.getTime()) / 60_000)
+    : null;
+  const stale = ageMinutes == null || ageMinutes >= maxAgeMinutes;
+
+  const latest = await db.query(
+    `SELECT MAX(date)::text AS latest_data_date
+       FROM daily_metrics
+      WHERE user_id=$1 AND source='oura'`,
+    [userId]
+  );
+
+  const counts = await db.query(
+    `SELECT endpoint, COUNT(*)::int AS count
+       FROM raw_provider_records
+      WHERE user_id=$1 AND provider='oura'
+      GROUP BY endpoint
+      ORDER BY endpoint`,
+    [userId]
+  );
+
+  const cachedRecords: Record<string, number> = {};
+  for (const row of counts.rows) cachedRecords[String(row.endpoint)] = Number(row.count);
+
+  return {
+    connected: true,
+    connection_status: String(connection.rows[0].status ?? "connected"),
+    last_sync_at: validLastSync?.toISOString() ?? null,
+    age_minutes: ageMinutes == null ? null : Math.round(ageMinutes * 10) / 10,
+    cache_status: validLastSync ? (stale ? "stale" : "fresh") : "never_synced",
+    refresh_threshold_minutes: maxAgeMinutes,
+    next_health_query_will_refresh: stale,
+    refresh_in_flight: refreshInFlight.has(userId),
+    latest_data_date: latest.rows[0]?.latest_data_date ?? null,
+    cached_records: cachedRecords
+  };
 }
 
 /**
