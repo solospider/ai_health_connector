@@ -29,6 +29,23 @@ export type OuraSyncStatus = {
   cached_records: Record<string, number>;
 };
 
+export type OuraRawDiagnostic = {
+  date: string;
+  oura_api: Record<string, { available: boolean; count: number }>;
+  local_raw: Record<string, { available: boolean; count: number }>;
+  normalized: {
+    row_exists: boolean;
+    sleep_score: boolean;
+    readiness_score: boolean;
+    activity_score: boolean;
+    sleep_duration: boolean;
+    hrv: boolean;
+    resting_hr: boolean;
+  };
+  endpoint_status: Record<string, "available" | "not_available_from_oura" | "local_raw_missing" | "not_normalized">;
+  diagnosis: string[];
+};
+
 const refreshInFlight = new Map<string, Promise<OuraFreshnessResult>>();
 
 async function fetchCollection(userId: string, endpoint: string, startDate: string, endDate: string) {
@@ -134,6 +151,90 @@ export async function syncOura(userId: string, startDate: string, endDate: strin
 
 function dateOnly(date: Date) {
   return date.toISOString().slice(0, 10);
+}
+
+export async function getOuraRawDiagnostic(userId: string, date: string): Promise<OuraRawDiagnostic> {
+  const endpoints = ["daily_sleep", "daily_readiness", "daily_activity", "sleep"] as const;
+  const apiCounts: Record<string, number> = {};
+
+  for (const endpoint of endpoints) {
+    const records = await fetchCollection(userId, endpoint, date, date);
+    apiCounts[endpoint] = records.length;
+  }
+
+  const raw = await db.query(
+    `SELECT endpoint, COUNT(*)::int AS count
+       FROM raw_provider_records
+      WHERE user_id=$1 AND provider='oura' AND event_date=$2::date
+      GROUP BY endpoint`,
+    [userId, date]
+  );
+
+  const rawCounts: Record<string, number> = {};
+  for (const endpoint of endpoints) rawCounts[endpoint] = 0;
+  for (const row of raw.rows) rawCounts[String(row.endpoint)] = Number(row.count);
+
+  const normalizedResult = await db.query(
+    `SELECT sleep_score, readiness_score, activity_score, total_sleep_seconds,
+            average_hrv_ms, resting_hr_bpm
+       FROM daily_metrics
+      WHERE user_id=$1 AND source='oura' AND date=$2::date
+      LIMIT 1`,
+    [userId, date]
+  );
+  const normalizedRow = normalizedResult.rows[0] ?? null;
+
+  const normalized = {
+    row_exists: Boolean(normalizedRow),
+    sleep_score: normalizedRow?.sleep_score != null,
+    readiness_score: normalizedRow?.readiness_score != null,
+    activity_score: normalizedRow?.activity_score != null,
+    sleep_duration: normalizedRow?.total_sleep_seconds != null,
+    hrv: normalizedRow?.average_hrv_ms != null,
+    resting_hr: normalizedRow?.resting_hr_bpm != null
+  };
+
+  const ouraApi: Record<string, { available: boolean; count: number }> = {};
+  const localRaw: Record<string, { available: boolean; count: number }> = {};
+  const endpointStatus: OuraRawDiagnostic["endpoint_status"] = {};
+  const diagnosis: string[] = [];
+
+  for (const endpoint of endpoints) {
+    const apiCount = apiCounts[endpoint] ?? 0;
+    const localCount = rawCounts[endpoint] ?? 0;
+    ouraApi[endpoint] = { available: apiCount > 0, count: apiCount };
+    localRaw[endpoint] = { available: localCount > 0, count: localCount };
+
+    const normalizedAvailable =
+      endpoint === "daily_sleep" ? normalized.sleep_score :
+      endpoint === "daily_readiness" ? normalized.readiness_score :
+      endpoint === "daily_activity" ? normalized.activity_score :
+      normalized.sleep_duration;
+
+    if (apiCount === 0) {
+      endpointStatus[endpoint] = "not_available_from_oura";
+      diagnosis.push(`${endpoint}: Oura API returned no record for ${date}.`);
+    } else if (localCount === 0) {
+      endpointStatus[endpoint] = "local_raw_missing";
+      diagnosis.push(`${endpoint}: Oura API has data, but local raw cache has no record.`);
+    } else if (!normalizedAvailable) {
+      endpointStatus[endpoint] = "not_normalized";
+      diagnosis.push(`${endpoint}: raw data exists locally, but normalized daily metric is missing.`);
+    } else {
+      endpointStatus[endpoint] = "available";
+    }
+  }
+
+  if (diagnosis.length === 0) diagnosis.push(`All checked Oura layers contain data for ${date}.`);
+
+  return {
+    date,
+    oura_api: ouraApi,
+    local_raw: localRaw,
+    normalized,
+    endpoint_status: endpointStatus,
+    diagnosis
+  };
 }
 
 export async function getOuraSyncStatus(userId: string, maxAgeMinutes = 15): Promise<OuraSyncStatus> {
