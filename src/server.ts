@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { handleApiRequest } from "./api/routes.js";
 import { authenticatedUserId, sendUnauthorized } from "./auth/http.js";
+import { handleOAuthRequest } from "./auth/oauth.js";
 import { env } from "./config.js";
 import { createHealthMcpServer } from "./mcp/server.js";
 import { startOuraBackgroundSync } from "./oura/background-sync.js";
@@ -45,7 +46,7 @@ const httpServer = createServer(async (req, res) => {
             <section style="margin-top:36px;padding:24px;border:1px solid #e5e7eb;border-radius:16px">
               <h2 style="margin-top:0">Account</h2>
               <p>Status: <strong>${userId ? "authenticated" : "not authenticated"}</strong></p>
-              ${userId ? `<p>Oura: <strong>${connected ? oura?.status ?? "connected" : "not connected"}</strong></p>${connected ? `<p>Last sync: ${oura?.last_sync_at ?? "never"}</p><p><a href="/sync/oura">Sync last 90 days</a></p>` : `<p><a href="/auth/oura/start">Connect Oura</a></p>`}` : `<p>Use <code>POST /api/v1/auth/register</code> or <code>/api/v1/auth/login</code> to create a session.</p>`}
+              ${userId ? `<p>Oura: <strong>${connected ? oura?.status ?? "connected" : "not connected"}</strong></p>${connected ? `<p>Last sync: ${oura?.last_sync_at ?? "never"}</p><p><a href="/sync/oura">Sync last 90 days</a></p>` : `<p><a href="/auth/oura/start">Connect Oura</a></p>`}` : `<p>Use <code>POST /api/v1/auth/register</code> or <code>/api/v1/auth/login</code> to create a session. ChatGPT MCP connections use OAuth 2.1.</p>`}
             </section>
           </body>
         </html>`
@@ -55,6 +56,8 @@ const httpServer = createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/healthz") {
       return void sendJson(res, 200, { ok: true, service: "AI Health Connection", version: PRODUCT_VERSION });
     }
+
+    if (await handleOAuthRequest(req, res, url)) return;
 
     if (await handleApiRequest(req, res, url)) return;
 
@@ -92,7 +95,7 @@ const httpServer = createServer(async (req, res) => {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "POST, GET, DELETE, OPTIONS",
         "Access-Control-Allow-Headers": "content-type, mcp-session-id, authorization",
-        "Access-Control-Expose-Headers": "Mcp-Session-Id"
+        "Access-Control-Expose-Headers": "Mcp-Session-Id, WWW-Authenticate"
       });
       return void res.end();
     }
@@ -100,7 +103,7 @@ const httpServer = createServer(async (req, res) => {
     const MCP_METHODS = new Set(["POST", "GET", "DELETE"]);
     if (url.pathname === "/mcp" && req.method && MCP_METHODS.has(req.method)) {
       res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
+      res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id, WWW-Authenticate");
 
       const userId = await authenticatedUserId(req);
       if (!userId) return void sendUnauthorized(res);
