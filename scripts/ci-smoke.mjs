@@ -63,7 +63,7 @@ try {
     assert.equal(response.status, 200);
     assert.equal(body.service, "AI Health Connection");
     assert.equal(body.status, "ok");
-    assert.equal(body.version, "1.1.1");
+    assert.equal(body.version, "1.1.2");
     passed("public health endpoint remains available");
   }
 
@@ -152,7 +152,7 @@ try {
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: form.toString()
     });
-    assert.equal(approval.status, 302);
+    assert.equal(approval.status, 303);
     const callback = new URL(approval.headers.get("location"));
     assert.equal(callback.searchParams.get("state"), "ci-state");
     assert.equal(callback.searchParams.get("iss"), baseUrl);
@@ -180,7 +180,7 @@ try {
     const me = await json("/api/v1/me", { headers: bearer(token.body.access_token) });
     assert.equal(me.response.status, 200);
     assert.equal(me.body.user.id, userA.user.id);
-    passed("stable ChatGPT callback + issuer identification + PKCE issues a user-bound OAuth token");
+    passed("stable ChatGPT callback + 303 redirect + issuer identification + PKCE issues a user-bound OAuth token");
   }
 
   {
@@ -218,7 +218,7 @@ try {
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.ok, true);
-    assert.equal(body.version, "1.1.1");
+    assert.equal(body.version, "1.1.2");
     passed("legacy health endpoint remains compatible");
   }
 
