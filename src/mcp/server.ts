@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { env } from "../config.js";
-import { ensureOuraFresh, getOuraSyncStatus } from "../oura/sync.js";
+import { ensureOuraFresh, getOuraRawDiagnostic, getOuraSyncStatus } from "../oura/sync.js";
 import {
   comparePeriods,
   findAnomalies,
@@ -36,10 +36,10 @@ const dateString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD");
 
 export function createHealthMcpServer(userId = env.DEV_USER_ID) {
   const server = new McpServer(
-    { name: "personal-health-data", version: "0.4.0" },
+    { name: "personal-health-data", version: "0.5.0" },
     {
       instructions:
-        "Read-only personal health tools. Before serving health queries, the server refreshes Oura data when the local cache is older than 15 minutes. The sync-status tool itself does not trigger a refresh. Report measurements and statistical trends accurately. Treat insufficient baseline data as uncertain and do not diagnose disease from wearable data."
+        "Read-only personal health tools. Before serving health queries, the server refreshes Oura data when the local cache is older than 15 minutes. The sync-status tool itself does not trigger a refresh. The raw diagnostic tool checks Oura API availability versus local raw and normalized layers without returning raw health payloads. Report measurements and statistical trends accurately. Treat insufficient baseline data as uncertain and do not diagnose disease from wearable data."
     }
   );
 
@@ -56,6 +56,24 @@ export function createHealthMcpServer(userId = env.DEV_USER_ID) {
     },
     async () => {
       const data = await getOuraSyncStatus(userId, 15);
+      return {
+        content: [{ type: "text", text: JSON.stringify(data) }],
+        structuredContent: data
+      };
+    }
+  );
+
+  server.registerTool(
+    "get_oura_raw_status",
+    {
+      title: "Diagnose Oura data availability",
+      description:
+        "Checks one date directly against the Oura API and compares availability with the local raw cache and normalized daily metrics. Returns counts and availability only, not raw health payloads. Use this to diagnose why a date appears missing or stale.",
+      inputSchema: { date: dateString },
+      annotations: { readOnlyHint: true, openWorldHint: true }
+    },
+    async ({ date }) => {
+      const data = await getOuraRawDiagnostic(userId, date);
       return {
         content: [{ type: "text", text: JSON.stringify(data) }],
         structuredContent: data
