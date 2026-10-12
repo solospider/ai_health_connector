@@ -10,7 +10,11 @@ const Env = z.object({
   OURA_REDIRECT_URI: z.string().url().optional(),
   OURA_SCOPES: z.string().default("daily heartrate workout spo2"),
   TOKEN_ENCRYPTION_KEY_BASE64: z.string().min(1),
-  DEV_USER_ID: z.string().uuid().default("00000000-0000-0000-0000-000000000001")
+  DEV_USER_ID: z.string().uuid().default("00000000-0000-0000-0000-000000000001"),
+  BACKGROUND_SYNC_ENABLED: z.coerce.boolean().default(true),
+  BACKGROUND_SYNC_INTERVAL_MINUTES: z.coerce.number().int().min(5).max(1440).default(15),
+  BACKGROUND_SYNC_RECENT_DAYS: z.coerce.number().int().min(1).max(30).default(3),
+  BACKGROUND_SYNC_STARTUP_DELAY_SECONDS: z.coerce.number().int().min(0).max(300).default(10)
 });
 
 const parsed = Env.parse(process.env);
