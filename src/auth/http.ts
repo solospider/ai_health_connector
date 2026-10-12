@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { env } from "../config.js";
+import { authenticateOAuthAccessToken, protectedResourceMetadataUrl } from "./oauth.js";
 import { authenticateSessionToken } from "./service.js";
 
 export function requestSessionToken(req: IncomingMessage): string | null {
@@ -18,8 +19,10 @@ export function requestSessionToken(req: IncomingMessage): string | null {
 export async function authenticatedUserId(req: IncomingMessage): Promise<string | null> {
   const token = requestSessionToken(req);
   if (token) {
-    const userId = await authenticateSessionToken(token);
-    if (userId) return userId;
+    const sessionUserId = await authenticateSessionToken(token);
+    if (sessionUserId) return sessionUserId;
+    const oauth = await authenticateOAuthAccessToken(token);
+    if (oauth) return oauth.userId;
   }
   if (!env.AUTH_REQUIRED) return env.DEV_USER_ID;
   return null;
@@ -41,8 +44,11 @@ export function clearSessionCookie(res: ServerResponse) {
   );
 }
 
-export function sendUnauthorized(res: ServerResponse) {
-  res.setHeader("WWW-Authenticate", "Bearer");
+export function sendUnauthorized(res: ServerResponse, scope = "health:read") {
+  res.setHeader(
+    "WWW-Authenticate",
+    `Bearer resource_metadata="${protectedResourceMetadataUrl()}", scope="${scope}"`
+  );
   res.writeHead(401, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store"

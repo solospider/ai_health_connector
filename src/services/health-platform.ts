@@ -1,7 +1,7 @@
 import { db } from "../db/pool.js";
 import { getOuraSyncStatus, syncOura } from "../oura/sync.js";
 
-export const PRODUCT_VERSION = "1.0.0";
+export const PRODUCT_VERSION = "1.1.0";
 
 export function defaultSyncRange(days = 90) {
   const end = new Date();

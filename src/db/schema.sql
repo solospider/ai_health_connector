@@ -24,6 +24,43 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 
+CREATE TABLE IF NOT EXISTS oauth_clients (
+  client_id text PRIMARY KEY,
+  client_name text,
+  redirect_uris text[] NOT NULL,
+  token_endpoint_auth_method text NOT NULL DEFAULT 'none',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+  code_hash text PRIMARY KEY,
+  client_id text NOT NULL REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  redirect_uri text NOT NULL,
+  code_challenge text NOT NULL,
+  scopes text[] NOT NULL DEFAULT '{}',
+  resource text NOT NULL,
+  expires_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_codes_expires_at ON oauth_authorization_codes(expires_at);
+
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  client_id text NOT NULL REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+  access_token_hash text NOT NULL UNIQUE,
+  refresh_token_hash text NOT NULL UNIQUE,
+  scopes text[] NOT NULL DEFAULT '{}',
+  resource text NOT NULL,
+  access_expires_at timestamptz NOT NULL,
+  refresh_expires_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_used_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_tokens_user_id ON oauth_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_oauth_tokens_access_expires_at ON oauth_tokens(access_expires_at);
+
 CREATE TABLE IF NOT EXISTS connections (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
