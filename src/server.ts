@@ -5,7 +5,7 @@ import { authenticatedUserId, sendUnauthorized } from "./auth/http.js";
 import { handleOAuthRequest } from "./auth/oauth.js";
 import { env } from "./config.js";
 import { handleFamilyRequest } from "./family.js";
-import { createHealthMcpServer } from "./mcp/server.js";
+import { createFamilyHealthMcpServer } from "./mcp/family-server.js";
 import { handleOnboardingRequest } from "./onboarding.js";
 import { startOuraBackgroundSync } from "./oura/background-sync.js";
 import { createOuraAuthorizationUrl, finishOuraAuthorization } from "./oura/oauth.js";
@@ -114,7 +114,7 @@ const httpServer = createServer(async (req, res) => {
 
       const userId = await authenticatedUserId(req);
       if (!userId) return void sendUnauthorized(res);
-      const mcp = createHealthMcpServer(userId);
+      const mcp = createFamilyHealthMcpServer(userId);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true
