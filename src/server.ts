@@ -1,10 +1,10 @@
 import { createServer } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { handleApiRequest } from "./api/routes.js";
 import { env } from "./config.js";
-import { db } from "./db/pool.js";
 import { createHealthMcpServer } from "./mcp/server.js";
 import { createOuraAuthorizationUrl, finishOuraAuthorization } from "./oura/oauth.js";
-import { syncOura } from "./oura/sync.js";
+import { PRODUCT_VERSION, getConnections, triggerSync } from "./services/health-platform.js";
 
 function sendJson(res: import("node:http").ServerResponse, status: number, body: unknown) {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
@@ -16,42 +16,55 @@ function sendHtml(res: import("node:http").ServerResponse, status: number, html:
   res.end(html);
 }
 
-function defaultSyncRange() {
-  const end = new Date();
-  const start = new Date(end);
-  start.setUTCDate(start.getUTCDate() - 89);
-  return {
-    start: start.toISOString().slice(0, 10),
-    end: end.toISOString().slice(0, 10)
-  };
-}
-
 const httpServer = createServer(async (req, res) => {
   try {
     if (!req.url) return void res.writeHead(400).end("Missing URL");
     const url = new URL(req.url, env.BASE_URL);
 
     if (req.method === "GET" && url.pathname === "/") {
-      const connection = await db.query(
-        `SELECT status, scopes, last_sync_at FROM connections WHERE user_id=$1 AND provider='oura'`,
-        [env.DEV_USER_ID]
-      );
-      const connected = Boolean(connection.rowCount);
+      const connections = await getConnections(env.DEV_USER_ID);
+      const oura = connections.find((connection) => connection.provider === "oura");
+      const connected = Boolean(oura);
       return void sendHtml(
         res,
         200,
-        `<!doctype html><html><body style="font-family:system-ui;max-width:680px;margin:48px auto;padding:0 20px">
-          <h1>Personal Health Data MVP</h1>
-          <p>Oura: <strong>${connected ? "connected" : "not connected"}</strong></p>
-          ${connected ? `<p>Last sync: ${connection.rows[0].last_sync_at ?? "never"}</p><a href="/sync/oura">Sync last 90 days</a>` : `<a href="/auth/oura/start">Connect Oura</a>`}
-          <p>MCP endpoint: <code>${env.BASE_URL}/mcp</code></p>
-        </body></html>`
+        `<!doctype html>
+        <html lang="en">
+          <head>
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1" />
+            <title>AI Health Connection</title>
+          </head>
+          <body style="font-family:system-ui,-apple-system,sans-serif;max-width:760px;margin:64px auto;padding:0 24px;line-height:1.5;color:#18212b">
+            <p style="font-weight:700;letter-spacing:.06em;text-transform:uppercase;font-size:12px">AI Health Connection · v${PRODUCT_VERSION}</p>
+            <h1 style="font-size:42px;line-height:1.05;margin:12px 0">Your health data, connected to AI.</h1>
+            <p style="font-size:18px;color:#4b5563">Connect wearable data once, keep it synchronized, and expose a stable health context to ChatGPT and other authorized AI clients.</p>
+            <section style="margin-top:36px;padding:24px;border:1px solid #e5e7eb;border-radius:16px">
+              <h2 style="margin-top:0">Oura connection</h2>
+              <p>Status: <strong>${connected ? oura?.status ?? "connected" : "not connected"}</strong></p>
+              ${connected ? `<p>Last sync: ${oura?.last_sync_at ?? "never"}</p><p><a href="/sync/oura">Sync last 90 days</a></p>` : `<p><a href="/auth/oura/start">Connect Oura</a></p>`}
+            </section>
+            <section style="margin-top:28px">
+              <h2>Endpoints</h2>
+              <ul>
+                <li><code>GET /api/v1/health</code></li>
+                <li><code>GET /api/v1/me</code></li>
+                <li><code>GET /api/v1/connections</code></li>
+                <li><code>GET /api/v1/sync/status</code></li>
+                <li><code>POST /api/v1/sync</code></li>
+                <li><code>POST /mcp</code></li>
+              </ul>
+            </section>
+          </body>
+        </html>`
       );
     }
 
     if (req.method === "GET" && url.pathname === "/healthz") {
-      return void sendJson(res, 200, { ok: true });
+      return void sendJson(res, 200, { ok: true, service: "AI Health Connection", version: PRODUCT_VERSION });
     }
+
+    if (await handleApiRequest(req, res, url, env.DEV_USER_ID)) return;
 
     if (req.method === "GET" && url.pathname === "/auth/oura/start") {
       const location = await createOuraAuthorizationUrl(env.DEV_USER_ID);
@@ -71,12 +84,12 @@ const httpServer = createServer(async (req, res) => {
       return void res.end();
     }
 
+    // Backwards-compatible development endpoint. New clients should use POST /api/v1/sync.
     if (req.method === "GET" && url.pathname === "/sync/oura") {
-      const defaults = defaultSyncRange();
-      const start = url.searchParams.get("start") ?? defaults.start;
-      const end = url.searchParams.get("end") ?? defaults.end;
-      const counts = await syncOura(env.DEV_USER_ID, start, end);
-      return void sendJson(res, 200, { synced: true, start, end, counts });
+      const start = url.searchParams.get("start") ?? undefined;
+      const end = url.searchParams.get("end") ?? undefined;
+      const result = await triggerSync(env.DEV_USER_ID, start, end);
+      return void sendJson(res, 200, result);
     }
 
     if (req.method === "OPTIONS" && url.pathname === "/mcp") {
@@ -119,6 +132,7 @@ const httpServer = createServer(async (req, res) => {
 });
 
 httpServer.listen(env.PORT, () => {
-  console.log(`Health MVP listening at ${env.BASE_URL}`);
+  console.log(`AI Health Connection v${PRODUCT_VERSION} listening at ${env.BASE_URL}`);
+  console.log(`REST API: ${env.BASE_URL}/api/v1/health`);
   console.log(`MCP endpoint: ${env.BASE_URL}/mcp`);
 });
