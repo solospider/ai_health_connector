@@ -105,3 +105,71 @@ export async function getDetailedSleep(userId: string, date: string): Promise<De
     }
   };
 }
+
+export async function getDailySpO2(userId: string, date: string) {
+  const records = await rawRecords(userId, "daily_spo2", date);
+  const record = records[0] ?? null;
+  return {
+    date,
+    available: Boolean(record),
+    average_spo2_percent: asNumber(record?.spo2_percentage?.average),
+    source_records: records.length
+  };
+}
+
+export async function getHeartRateSeries(userId: string, date: string) {
+  const records = await rawRecords(userId, "heartrate", date);
+  const samples = records
+    .map((record) => ({
+      timestamp: asString(record.timestamp),
+      bpm: asNumber(record.bpm),
+      source: asString(record.source)
+    }))
+    .filter((sample) => sample.timestamp && sample.bpm != null)
+    .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
+
+  const bpms = samples.map((sample) => sample.bpm as number);
+  return {
+    date,
+    available: samples.length > 0,
+    sample_count: samples.length,
+    min_bpm: bpms.length ? Math.min(...bpms) : null,
+    max_bpm: bpms.length ? Math.max(...bpms) : null,
+    average_bpm: bpms.length ? bpms.reduce((a, b) => a + b, 0) / bpms.length : null,
+    samples
+  };
+}
+
+export async function getWorkouts(userId: string, startDate: string, endDate: string) {
+  const result = await db.query(
+    `SELECT payload
+       FROM raw_provider_records
+      WHERE user_id=$1 AND provider='oura' AND endpoint='workout'
+        AND event_date BETWEEN $2::date AND $3::date
+      ORDER BY event_date, fetched_at`,
+    [userId, startDate, endDate]
+  );
+
+  const workouts = result.rows.map((row) => {
+    const record = row.payload as Record<string, any>;
+    return {
+      id: asString(record.id),
+      day: asString(record.day),
+      activity: asString(record.activity),
+      label: asString(record.label),
+      source: asString(record.source),
+      intensity: asString(record.intensity),
+      start_datetime: asString(record.start_datetime),
+      end_datetime: asString(record.end_datetime),
+      calories: asNumber(record.calories),
+      distance_meters: asNumber(record.distance)
+    };
+  });
+
+  return {
+    start_date: startDate,
+    end_date: endDate,
+    count: workouts.length,
+    workouts
+  };
+}
