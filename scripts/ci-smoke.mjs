@@ -63,7 +63,7 @@ try {
     assert.equal(response.status, 200);
     assert.equal(body.service, "AI Health Connection");
     assert.equal(body.status, "ok");
-    assert.equal(body.version, "1.1.0");
+    assert.equal(body.version, "1.1.1");
     passed("public health endpoint remains available");
   }
 
@@ -72,18 +72,20 @@ try {
     assert.equal(response.status, 200);
     assert.equal(body.resource, `${baseUrl}/mcp`);
     assert.deepEqual(body.scopes_supported, ["health:read"]);
-    assert.equal(body.authorization_servers.length, 1);
+    assert.deepEqual(body.authorization_servers, [baseUrl]);
     passed("protected resource metadata is discoverable");
   }
 
   {
     const { response, body } = await json("/.well-known/oauth-authorization-server");
     assert.equal(response.status, 200);
+    assert.equal(body.issuer, baseUrl);
     assert.equal(body.authorization_endpoint, `${baseUrl}/oauth/authorize`);
     assert.equal(body.token_endpoint, `${baseUrl}/oauth/token`);
     assert.equal(body.registration_endpoint, `${baseUrl}/oauth/register`);
     assert.ok(body.code_challenge_methods_supported.includes("S256"));
-    passed("OAuth authorization server metadata is discoverable");
+    assert.equal(body.authorization_response_iss_parameter_supported, true);
+    passed("OAuth authorization server metadata advertises RFC 9207 issuer identification");
   }
 
   {
@@ -116,7 +118,7 @@ try {
   {
     const verifier = crypto.randomBytes(32).toString("base64url");
     const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
-    const redirectUri = "https://chatgpt.com/connector/oauth/test-callback";
+    const redirectUri = "https://chatgpt.com/connector_platform_oauth_redirect";
     const registration = await json("/oauth/register", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -153,6 +155,7 @@ try {
     assert.equal(approval.status, 302);
     const callback = new URL(approval.headers.get("location"));
     assert.equal(callback.searchParams.get("state"), "ci-state");
+    assert.equal(callback.searchParams.get("iss"), baseUrl);
     const code = callback.searchParams.get("code");
     assert.ok(code);
 
@@ -177,7 +180,7 @@ try {
     const me = await json("/api/v1/me", { headers: bearer(token.body.access_token) });
     assert.equal(me.response.status, 200);
     assert.equal(me.body.user.id, userA.user.id);
-    passed("DCR + authorization code + PKCE issues a user-bound OAuth access token");
+    passed("stable ChatGPT callback + issuer identification + PKCE issues a user-bound OAuth token");
   }
 
   {
@@ -215,7 +218,7 @@ try {
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.ok, true);
-    assert.equal(body.version, "1.1.0");
+    assert.equal(body.version, "1.1.1");
     passed("legacy health endpoint remains compatible");
   }
 
