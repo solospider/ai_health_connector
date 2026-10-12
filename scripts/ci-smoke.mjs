@@ -63,8 +63,45 @@ try {
     assert.equal(response.status, 200);
     assert.equal(body.service, "AI Health Connection");
     assert.equal(body.status, "ok");
-    assert.equal(body.version, "1.1.3");
+    assert.equal(body.version, "1.2.0");
     passed("public health endpoint remains available");
+  }
+
+  {
+    const signupPage = await request("/signup");
+    assert.equal(signupPage.status, 200);
+    const html = await signupPage.text();
+    assert.match(html, /Create account &amp; Connect Oura/);
+    assert.doesNotMatch(signupPage.headers.get("content-security-policy") ?? "", /form-action/);
+
+    const signupForm = new URLSearchParams({
+      email: "onboarding@example.com",
+      password: "correct-horse-battery-staple",
+      confirm_password: "correct-horse-battery-staple"
+    });
+    if (inviteCode) signupForm.set("invite_code", inviteCode);
+    const signup = await request("/signup", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: signupForm.toString()
+    });
+    assert.equal(signup.status, 303);
+    assert.equal(signup.headers.get("location"), "/auth/oura/start");
+    const setCookie = signup.headers.get("set-cookie") ?? "";
+    assert.match(setCookie, /aihc_session=/);
+    const cookie = setCookie.split(";")[0];
+
+    const ouraStart = await request("/auth/oura/start", { headers: { cookie } });
+    assert.equal(ouraStart.status, 302);
+    const ouraLocation = new URL(ouraStart.headers.get("location"));
+    assert.equal(ouraLocation.hostname, "cloud.ouraring.com");
+    const state = ouraLocation.searchParams.get("state");
+    assert.ok(state);
+    const onboardingUser = await client.query(`SELECT id FROM users WHERE email='onboarding@example.com' LIMIT 1`);
+    assert.equal(onboardingUser.rowCount, 1);
+    const stateRow = await client.query(`SELECT user_id FROM oauth_states WHERE state=$1`, [state]);
+    assert.equal(String(stateRow.rows[0].user_id), String(onboardingUser.rows[0].id));
+    passed("browser signup creates a session and continues directly into user-bound Oura OAuth");
   }
 
   {
@@ -224,7 +261,7 @@ try {
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.ok, true);
-    assert.equal(body.version, "1.1.3");
+    assert.equal(body.version, "1.2.0");
     passed("legacy health endpoint remains compatible");
   }
 
