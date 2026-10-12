@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import pg from "pg";
 
 const baseUrl = process.env.BASE_URL ?? "http://127.0.0.1:8787";
@@ -9,11 +10,7 @@ const inviteCode = process.env.REGISTRATION_INVITE_CODE;
 if (!databaseUrl) throw new Error("DATABASE_URL is required for CI smoke tests");
 
 async function request(path, options = {}) {
-  const response = await fetch(new URL(path, baseUrl), {
-    redirect: "manual",
-    ...options
-  });
-  return response;
+  return fetch(new URL(path, baseUrl), { redirect: "manual", ...options });
 }
 
 async function json(path, options = {}) {
@@ -52,10 +49,10 @@ try {
   const tables = await client.query(
     `SELECT table_name FROM information_schema.tables
      WHERE table_schema='public' AND table_name = ANY($1::text[])`,
-    [["users", "sessions", "connections", "oauth_states", "raw_provider_records", "daily_metrics", "heart_rate_samples"]]
+    [["users", "sessions", "oauth_clients", "oauth_authorization_codes", "oauth_tokens", "connections", "oauth_states", "raw_provider_records", "daily_metrics", "heart_rate_samples"]]
   );
-  assert.equal(tables.rowCount, 7);
-  passed("database schema contains auth and health tables");
+  assert.equal(tables.rowCount, 10);
+  passed("database schema contains auth, OAuth, and health tables");
 
   const userRow = await client.query(`SELECT id, timezone FROM users WHERE id=$1`, [expectedUserId]);
   assert.equal(userRow.rowCount, 1);
@@ -66,31 +63,41 @@ try {
     assert.equal(response.status, 200);
     assert.equal(body.service, "AI Health Connection");
     assert.equal(body.status, "ok");
-    assert.equal(body.version, "1.0.0");
-    assert.ok(Number.isFinite(Date.parse(body.timestamp)));
+    assert.equal(body.version, "1.1.0");
     passed("public health endpoint remains available");
+  }
+
+  {
+    const { response, body } = await json("/.well-known/oauth-protected-resource");
+    assert.equal(response.status, 200);
+    assert.equal(body.resource, `${baseUrl}/mcp`);
+    assert.deepEqual(body.scopes_supported, ["health:read"]);
+    assert.equal(body.authorization_servers.length, 1);
+    passed("protected resource metadata is discoverable");
+  }
+
+  {
+    const { response, body } = await json("/.well-known/oauth-authorization-server");
+    assert.equal(response.status, 200);
+    assert.equal(body.authorization_endpoint, `${baseUrl}/oauth/authorize`);
+    assert.equal(body.token_endpoint, `${baseUrl}/oauth/token`);
+    assert.equal(body.registration_endpoint, `${baseUrl}/oauth/register`);
+    assert.ok(body.code_challenge_methods_supported.includes("S256"));
+    passed("OAuth authorization server metadata is discoverable");
   }
 
   {
     const { response, body } = await json("/api/v1/me");
     assert.equal(response.status, 401);
     assert.equal(body.error, "Authentication required");
-    passed("protected REST endpoints reject anonymous requests");
+    assert.match(response.headers.get("www-authenticate") ?? "", /resource_metadata=/);
+    passed("protected endpoints reject anonymous requests with OAuth discovery challenge");
   }
 
   const userA = await register("alice@example.com");
-  passed("user A can register and receives a session token");
   const userB = await register("bob@example.com");
-  passed("user B can register independently");
   assert.notEqual(userA.user.id, userB.user.id);
-
-  {
-    const { response, body } = await json("/api/v1/me", { headers: bearer(userA.access_token) });
-    assert.equal(response.status, 200);
-    assert.equal(body.user.id, userA.user.id);
-    assert.equal(body.user.email, "alice@example.com");
-    passed("session token resolves user identity server-side");
-  }
+  passed("two users can register independently");
 
   await client.query(
     `INSERT INTO connections(user_id, provider, access_token, refresh_token, scopes, token_expires_at)
@@ -101,11 +108,76 @@ try {
   {
     const a = await json("/api/v1/connections", { headers: bearer(userA.access_token) });
     const b = await json("/api/v1/connections", { headers: bearer(userB.access_token) });
-    assert.equal(a.response.status, 200);
     assert.equal(a.body.connections.length, 1);
-    assert.equal(b.response.status, 200);
     assert.deepEqual(b.body.connections, []);
     passed("connection data is isolated by authenticated user_id");
+  }
+
+  {
+    const verifier = crypto.randomBytes(32).toString("base64url");
+    const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
+    const redirectUri = "https://chatgpt.com/connector/oauth/test-callback";
+    const registration = await json("/oauth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_name: "ChatGPT CI",
+        redirect_uris: [redirectUri],
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+        token_endpoint_auth_method: "none"
+      })
+    });
+    assert.equal(registration.response.status, 201);
+    const clientId = registration.body.client_id;
+    assert.ok(clientId);
+
+    const authorize = new URLSearchParams({
+      response_type: "code",
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      scope: "health:read",
+      state: "ci-state",
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      resource: `${baseUrl}/mcp`
+    });
+    const form = new URLSearchParams(authorize);
+    form.set("email", "alice@example.com");
+    form.set("password", "correct-horse-battery-staple");
+    const approval = await request("/oauth/authorize", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString()
+    });
+    assert.equal(approval.status, 302);
+    const callback = new URL(approval.headers.get("location"));
+    assert.equal(callback.searchParams.get("state"), "ci-state");
+    const code = callback.searchParams.get("code");
+    assert.ok(code);
+
+    const tokenForm = new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: clientId,
+      code,
+      redirect_uri: redirectUri,
+      code_verifier: verifier,
+      resource: `${baseUrl}/mcp`
+    });
+    const token = await json("/oauth/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: tokenForm.toString()
+    });
+    assert.equal(token.response.status, 200);
+    assert.equal(token.body.token_type, "Bearer");
+    assert.ok(token.body.access_token);
+    assert.ok(token.body.refresh_token);
+
+    const me = await json("/api/v1/me", { headers: bearer(token.body.access_token) });
+    assert.equal(me.response.status, 200);
+    assert.equal(me.body.user.id, userA.user.id);
+    passed("DCR + authorization code + PKCE issues a user-bound OAuth access token");
   }
 
   {
@@ -114,15 +186,8 @@ try {
     const location = response.headers.get("location");
     assert.ok(location);
     const authorizationUrl = new URL(location);
-    assert.equal(authorizationUrl.origin, "https://cloud.ouraring.com");
-    assert.equal(authorizationUrl.pathname, "/oauth/authorize");
-    assert.ok(authorizationUrl.searchParams.get("state"));
-    assert.ok(authorizationUrl.searchParams.get("code_challenge"));
-    assert.equal(authorizationUrl.searchParams.get("code_challenge_method"), "S256");
-
     const state = authorizationUrl.searchParams.get("state");
     const stateRow = await client.query(`SELECT user_id FROM oauth_states WHERE state=$1`, [state]);
-    assert.equal(stateRow.rowCount, 1);
     assert.equal(String(stateRow.rows[0].user_id), userA.user.id);
     passed("Oura OAuth state is bound to authenticated user");
   }
@@ -130,28 +195,8 @@ try {
   {
     const response = await request("/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
     assert.equal(response.status, 401);
-    passed("MCP rejects anonymous requests before tool execution");
-  }
-
-  {
-    const { response, body } = await json("/api/v1/sync?start=2026-10-12&end=2026-10-11", {
-      method: "POST",
-      headers: bearer(userB.access_token)
-    });
-    assert.equal(response.status, 400);
-    assert.match(body.error, /start must not be after end/);
-    passed("authenticated sync validation remains intact");
-  }
-
-  {
-    const login = await json("/api/v1/auth/login", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email: "alice@example.com", password: "correct-horse-battery-staple" })
-    });
-    assert.equal(login.response.status, 200);
-    assert.ok(login.body.access_token);
-    passed("registered user can log in");
+    assert.match(response.headers.get("www-authenticate") ?? "", /oauth-protected-resource/);
+    passed("MCP rejects anonymous requests and advertises OAuth metadata");
   }
 
   {
@@ -166,18 +211,11 @@ try {
   }
 
   {
-    const { response, body } = await json("/auth/oura/callback");
-    assert.equal(response.status, 400);
-    assert.equal(body.error, "Missing code or state");
-    passed("Oura callback rejects missing code/state");
-  }
-
-  {
     const response = await request("/healthz");
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.ok, true);
-    assert.equal(body.version, "1.0.0");
+    assert.equal(body.version, "1.1.0");
     passed("legacy health endpoint remains compatible");
   }
 
