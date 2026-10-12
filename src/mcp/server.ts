@@ -2,7 +2,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { env } from "../config.js";
 import { ensureOuraFresh, getOuraRawDiagnostic, getOuraSyncStatus } from "../oura/sync.js";
-import { getDailySpO2, getDetailedSleep, getHeartRateSeries, getWorkouts } from "../oura/details.js";
+import {
+  getDailySpO2,
+  getDetailedSleep,
+  getHeartRateSeries,
+  getRespiratorySummary,
+  getWorkouts
+} from "../oura/details.js";
 import {
   comparePeriods,
   findAnomalies,
@@ -37,10 +43,10 @@ const dateString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD");
 
 export function createHealthMcpServer(userId = env.DEV_USER_ID) {
   const server = new McpServer(
-    { name: "personal-health-data", version: "0.6.0" },
+    { name: "personal-health-data", version: "0.7.0" },
     {
       instructions:
-        "Read-only personal health tools. Before serving health queries, the server refreshes Oura data when the local cache is older than 15 minutes. The sync-status tool itself does not trigger a refresh. The raw diagnostic tool checks Oura API availability versus local raw and normalized layers without returning raw health payloads. Detailed sleep, SpO2, heart-rate, and workout tools read the user's synced Oura data. Report measurements and statistical trends accurately. Treat insufficient baseline data as uncertain and do not diagnose disease from wearable data."
+        "Read-only personal health tools. Before serving health queries, the server refreshes Oura data when the local cache is older than 15 minutes. The sync-status tool itself does not trigger a refresh. The raw diagnostic tool checks Oura API availability versus local raw and normalized layers without returning raw health payloads. Detailed sleep, SpO2, breathing-disturbance, respiratory, heart-rate, and workout tools read the user's synced Oura data. Oura daily SpO2 is a sleep-period daily average; do not imply minute-level oxygen saturation or diagnose sleep apnea from wearable data. Report measurements and statistical trends accurately. Treat insufficient baseline data as uncertain and do not diagnose disease from wearable data."
     }
   );
 
@@ -105,13 +111,33 @@ export function createHealthMcpServer(userId = env.DEV_USER_ID) {
     "get_daily_spo2",
     {
       title: "Get daily Oura SpO2",
-      description: "Returns Oura's average blood-oxygen saturation recorded during sleep for one day, when available.",
+      description:
+        "Returns Oura's average blood-oxygen saturation recorded during sleep and the daily breathing disturbance index when available. This is not a minute-level SpO2 trace.",
       inputSchema: { date: dateString },
       annotations: { readOnlyHint: true, openWorldHint: false }
     },
     async ({ date }) => {
       await refresh();
       const data = await getDailySpO2(userId, date);
+      return {
+        content: [{ type: "text", text: JSON.stringify(data) }],
+        structuredContent: data
+      };
+    }
+  );
+
+  server.registerTool(
+    "get_respiratory_summary",
+    {
+      title: "Get Oura respiratory summary",
+      description:
+        "Returns the respiratory-related Oura data available for one sleep day: average SpO2, breathing disturbance index, average breathing rate, bedtime window, sleep duration, overnight heart rate, and HRV. Includes explicit limitations of Oura's daily SpO2 endpoint.",
+      inputSchema: { date: dateString },
+      annotations: { readOnlyHint: true, openWorldHint: false }
+    },
+    async ({ date }) => {
+      await refresh();
+      const data = await getRespiratorySummary(userId, date);
       return {
         content: [{ type: "text", text: JSON.stringify(data) }],
         structuredContent: data
