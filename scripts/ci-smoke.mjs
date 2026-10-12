@@ -49,7 +49,7 @@ try {
     assert.equal(response.status, 200);
     assert.equal(body.service, "AI Health Connection");
     assert.equal(body.status, "ok");
-    assert.equal(body.version, "0.8.1");
+    assert.equal(body.version, "0.9.0");
     assert.ok(Number.isFinite(Date.parse(body.timestamp)));
     passed("GET /api/v1/health");
   }
@@ -143,7 +143,7 @@ try {
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.ok, true);
-    assert.equal(body.version, "0.8.1");
+    assert.equal(body.version, "0.9.0");
     passed("legacy /healthz remains compatible");
   }
 

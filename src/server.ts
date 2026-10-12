@@ -3,6 +3,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { handleApiRequest } from "./api/routes.js";
 import { env } from "./config.js";
 import { createHealthMcpServer } from "./mcp/server.js";
+import { startOuraBackgroundSync } from "./oura/background-sync.js";
 import { createOuraAuthorizationUrl, finishOuraAuthorization } from "./oura/oauth.js";
 import { PRODUCT_VERSION, getConnections, triggerSync } from "./services/health-platform.js";
 
@@ -135,4 +136,5 @@ httpServer.listen(env.PORT, () => {
   console.log(`AI Health Connection v${PRODUCT_VERSION} listening at ${env.BASE_URL}`);
   console.log(`REST API: ${env.BASE_URL}/api/v1/health`);
   console.log(`MCP endpoint: ${env.BASE_URL}/mcp`);
+  startOuraBackgroundSync(env.DEV_USER_ID);
 });
