@@ -74,11 +74,37 @@ function addUtcDays(dateString: string, days: number) {
   return date.toISOString();
 }
 
+function dateFromIso(iso: string) {
+  return iso.slice(0, 10);
+}
+
+export function heartRateWindows(startDate: string, endDate: string, maxDays = 30) {
+  if (maxDays < 1) throw new Error("maxDays must be at least 1");
+
+  const windows: Array<{ startDate: string; endDate: string }> = [];
+  let cursor = startDate;
+  while (cursor <= endDate) {
+    const inclusiveEnd = dateFromIso(addUtcDays(cursor, maxDays - 1));
+    const windowEnd = inclusiveEnd < endDate ? inclusiveEnd : endDate;
+    windows.push({ startDate: cursor, endDate: windowEnd });
+    cursor = dateFromIso(addUtcDays(windowEnd, 1));
+  }
+  return windows;
+}
+
 async function fetchHeartRate(userId: string, startDate: string, endDate: string) {
-  return fetchCollectionWithParams(userId, "heartrate", {
-    start_datetime: `${startDate}T00:00:00.000Z`,
-    end_datetime: addUtcDays(endDate, 1)
-  });
+  const byTimestamp = new Map<string, AnyRecord>();
+  for (const window of heartRateWindows(startDate, endDate)) {
+    const records = await fetchCollectionWithParams(userId, "heartrate", {
+      start_datetime: `${window.startDate}T00:00:00.000Z`,
+      end_datetime: addUtcDays(window.endDate, 1)
+    });
+    for (const record of records) {
+      const key = String(record.timestamp ?? record.id ?? JSON.stringify(record));
+      byTimestamp.set(key, record);
+    }
+  }
+  return [...byTimestamp.values()];
 }
 
 async function grantedScopes(userId: string) {
