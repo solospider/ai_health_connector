@@ -63,7 +63,7 @@ try {
     assert.equal(response.status, 200);
     assert.equal(body.service, "AI Health Connection");
     assert.equal(body.status, "ok");
-    assert.equal(body.version, "1.1.2");
+    assert.equal(body.version, "1.1.3");
     passed("public health endpoint remains available");
   }
 
@@ -144,6 +144,12 @@ try {
       code_challenge_method: "S256",
       resource: `${baseUrl}/mcp`
     });
+
+    const authorizePage = await request(`/oauth/authorize?${authorize.toString()}`);
+    assert.equal(authorizePage.status, 200);
+    assert.doesNotMatch(authorizePage.headers.get("content-security-policy") ?? "", /form-action/);
+    passed("authorization page CSP does not block the OAuth form submission");
+
     const form = new URLSearchParams(authorize);
     form.set("email", "alice@example.com");
     form.set("password", "correct-horse-battery-staple");
@@ -218,7 +224,7 @@ try {
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.ok, true);
-    assert.equal(body.version, "1.1.2");
+    assert.equal(body.version, "1.1.3");
     passed("legacy health endpoint remains compatible");
   }
 
