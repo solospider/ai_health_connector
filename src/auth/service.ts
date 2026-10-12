@@ -94,7 +94,7 @@ export async function registerUser(emailInput: string, password: string, inviteC
   }
 }
 
-export async function loginUser(emailInput: string, password: string) {
+export async function verifyUserCredentials(emailInput: string, password: string) {
   const email = normalizeEmail(emailInput);
   const result = await db.query(
     `SELECT id, email, password_hash, timezone, created_at
@@ -105,18 +105,21 @@ export async function loginUser(emailInput: string, password: string) {
   );
   const row = result.rows[0];
   if (!row?.password_hash || !(await passwordMatches(password, String(row.password_hash)))) {
-    throw new Error("Invalid email or password");
+    return null;
   }
-  const session = await createSession(String(row.id));
   return {
-    user: {
-      id: String(row.id),
-      email: String(row.email),
-      timezone: String(row.timezone),
-      created_at: new Date(row.created_at).toISOString()
-    },
-    session
+    id: String(row.id),
+    email: String(row.email),
+    timezone: String(row.timezone),
+    created_at: new Date(row.created_at).toISOString()
   };
+}
+
+export async function loginUser(emailInput: string, password: string) {
+  const user = await verifyUserCredentials(emailInput, password);
+  if (!user) throw new Error("Invalid email or password");
+  const session = await createSession(user.id);
+  return { user, session };
 }
 
 export async function authenticateSessionToken(token: string): Promise<string | null> {
