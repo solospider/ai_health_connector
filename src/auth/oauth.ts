@@ -44,7 +44,7 @@ function sendHtml(res: ServerResponse, status: number, html: string) {
   res.writeHead(status, {
     "content-type": "text/html; charset=utf-8",
     "cache-control": "no-store",
-    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
     "x-content-type-options": "nosniff"
   });
   res.end(html);
