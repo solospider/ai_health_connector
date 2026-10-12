@@ -4,12 +4,14 @@ CREATE TABLE IF NOT EXISTS users (
   id uuid PRIMARY KEY,
   email text,
   password_hash text,
+  display_name text,
   timezone text NOT NULL DEFAULT 'UTC',
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name text;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique
   ON users ((lower(email))) WHERE email IS NOT NULL;
 
@@ -124,6 +126,20 @@ CREATE TABLE IF NOT EXISTS heart_rate_samples (
   source_type text,
   PRIMARY KEY(user_id, timestamp, source)
 );
+
+CREATE TABLE IF NOT EXISTS family_access (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  profile_user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  alias text NOT NULL,
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (owner_user_id <> profile_user_id),
+  UNIQUE(owner_user_id, profile_user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_family_access_owner ON family_access(owner_user_id, status);
+CREATE INDEX IF NOT EXISTS idx_family_access_profile ON family_access(profile_user_id, status);
 
 CREATE INDEX IF NOT EXISTS idx_daily_metrics_user_date
   ON daily_metrics(user_id, date DESC);
