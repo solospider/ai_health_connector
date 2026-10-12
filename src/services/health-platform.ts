@@ -1,7 +1,7 @@
 import { db } from "../db/pool.js";
 import { getOuraSyncStatus, syncOura } from "../oura/sync.js";
 
-export const PRODUCT_VERSION = "0.9.1";
+export const PRODUCT_VERSION = "1.0.0";
 
 export function defaultSyncRange(days = 90) {
   const end = new Date();
@@ -15,13 +15,14 @@ export function defaultSyncRange(days = 90) {
 
 export async function getUserProfile(userId: string) {
   const result = await db.query(
-    `SELECT id, timezone, created_at FROM users WHERE id=$1 LIMIT 1`,
+    `SELECT id, email, timezone, created_at FROM users WHERE id=$1 LIMIT 1`,
     [userId]
   );
   if (!result.rowCount) return null;
   const row = result.rows[0];
   return {
     id: String(row.id),
+    email: row.email ? String(row.email) : null,
     timezone: String(row.timezone),
     created_at: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at)
   };

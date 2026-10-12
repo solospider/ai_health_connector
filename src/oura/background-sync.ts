@@ -1,14 +1,12 @@
 import { env } from "../config.js";
+import { db } from "../db/pool.js";
 import { ensureOuraFresh } from "./sync.js";
 
 let interval: NodeJS.Timeout | null = null;
 let startupTimer: NodeJS.Timeout | null = null;
 
-async function runBackgroundSync(userId: string) {
+async function runBackgroundSyncForUser(userId: string) {
   try {
-    // Private-alpha background sync intentionally keeps the fetch window small.
-    // Historical backfill remains a separate operation until the known Oura
-    // heartrate >30-day range limitation is handled explicitly.
     const result = await ensureOuraFresh(
       userId,
       env.BACKGROUND_SYNC_INTERVAL_MINUTES,
@@ -18,20 +16,32 @@ async function runBackgroundSync(userId: string) {
 
     if (result.status === "refreshed") {
       console.log(
-        `[oura-sync] background refresh ${result.start}..${result.end}`,
+        `[oura-sync] user=${userId} background refresh ${result.start}..${result.end}`,
         result.counts ?? {}
       );
     } else if (result.status === "refresh_failed") {
-      console.error(`[oura-sync] background refresh failed: ${result.error ?? "unknown error"}`);
+      console.error(`[oura-sync] user=${userId} background refresh failed: ${result.error ?? "unknown error"}`);
     }
   } catch (error) {
     console.error(
-      `[oura-sync] background refresh crashed: ${error instanceof Error ? error.message : "unknown error"}`
+      `[oura-sync] user=${userId} background refresh crashed: ${error instanceof Error ? error.message : "unknown error"}`
     );
   }
 }
 
-export function startOuraBackgroundSync(userId: string) {
+async function runBackgroundSync() {
+  const result = await db.query(
+    `SELECT user_id
+       FROM connections
+      WHERE provider='oura' AND status='active'
+      ORDER BY user_id`
+  );
+  for (const row of result.rows) {
+    await runBackgroundSyncForUser(String(row.user_id));
+  }
+}
+
+export function startOuraBackgroundSync() {
   if (!env.BACKGROUND_SYNC_ENABLED || interval || startupTimer) return;
 
   const intervalMs = env.BACKGROUND_SYNC_INTERVAL_MINUTES * 60_000;
@@ -39,17 +49,17 @@ export function startOuraBackgroundSync(userId: string) {
 
   startupTimer = setTimeout(() => {
     startupTimer = null;
-    void runBackgroundSync(userId);
+    void runBackgroundSync();
   }, startupDelayMs);
   startupTimer.unref();
 
   interval = setInterval(() => {
-    void runBackgroundSync(userId);
+    void runBackgroundSync();
   }, intervalMs);
   interval.unref();
 
   console.log(
-    `[oura-sync] background sync enabled every ${env.BACKGROUND_SYNC_INTERVAL_MINUTES} minutes ` +
+    `[oura-sync] multi-user background sync enabled every ${env.BACKGROUND_SYNC_INTERVAL_MINUTES} minutes ` +
       `(recent window ${env.BACKGROUND_SYNC_RECENT_DAYS} days)`
   );
 }

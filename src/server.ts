@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { handleApiRequest } from "./api/routes.js";
+import { authenticatedUserId, sendUnauthorized } from "./auth/http.js";
 import { env } from "./config.js";
 import { createHealthMcpServer } from "./mcp/server.js";
 import { startOuraBackgroundSync } from "./oura/background-sync.js";
@@ -23,7 +24,8 @@ const httpServer = createServer(async (req, res) => {
     const url = new URL(req.url, env.BASE_URL);
 
     if (req.method === "GET" && url.pathname === "/") {
-      const connections = await getConnections(env.DEV_USER_ID);
+      const userId = await authenticatedUserId(req);
+      const connections = userId ? await getConnections(userId) : [];
       const oura = connections.find((connection) => connection.provider === "oura");
       const connected = Boolean(oura);
       return void sendHtml(
@@ -41,20 +43,9 @@ const httpServer = createServer(async (req, res) => {
             <h1 style="font-size:42px;line-height:1.05;margin:12px 0">Your health data, connected to AI.</h1>
             <p style="font-size:18px;color:#4b5563">Connect wearable data once, keep it synchronized, and expose a stable health context to ChatGPT and other authorized AI clients.</p>
             <section style="margin-top:36px;padding:24px;border:1px solid #e5e7eb;border-radius:16px">
-              <h2 style="margin-top:0">Oura connection</h2>
-              <p>Status: <strong>${connected ? oura?.status ?? "connected" : "not connected"}</strong></p>
-              ${connected ? `<p>Last sync: ${oura?.last_sync_at ?? "never"}</p><p><a href="/sync/oura">Sync last 90 days</a></p>` : `<p><a href="/auth/oura/start">Connect Oura</a></p>`}
-            </section>
-            <section style="margin-top:28px">
-              <h2>Endpoints</h2>
-              <ul>
-                <li><code>GET /api/v1/health</code></li>
-                <li><code>GET /api/v1/me</code></li>
-                <li><code>GET /api/v1/connections</code></li>
-                <li><code>GET /api/v1/sync/status</code></li>
-                <li><code>POST /api/v1/sync</code></li>
-                <li><code>POST /mcp</code></li>
-              </ul>
+              <h2 style="margin-top:0">Account</h2>
+              <p>Status: <strong>${userId ? "authenticated" : "not authenticated"}</strong></p>
+              ${userId ? `<p>Oura: <strong>${connected ? oura?.status ?? "connected" : "not connected"}</strong></p>${connected ? `<p>Last sync: ${oura?.last_sync_at ?? "never"}</p><p><a href="/sync/oura">Sync last 90 days</a></p>` : `<p><a href="/auth/oura/start">Connect Oura</a></p>`}` : `<p>Use <code>POST /api/v1/auth/register</code> or <code>/api/v1/auth/login</code> to create a session.</p>`}
             </section>
           </body>
         </html>`
@@ -65,10 +56,12 @@ const httpServer = createServer(async (req, res) => {
       return void sendJson(res, 200, { ok: true, service: "AI Health Connection", version: PRODUCT_VERSION });
     }
 
-    if (await handleApiRequest(req, res, url, env.DEV_USER_ID)) return;
+    if (await handleApiRequest(req, res, url)) return;
 
     if (req.method === "GET" && url.pathname === "/auth/oura/start") {
-      const location = await createOuraAuthorizationUrl(env.DEV_USER_ID);
+      const userId = await authenticatedUserId(req);
+      if (!userId) return void sendUnauthorized(res);
+      const location = await createOuraAuthorizationUrl(userId);
       res.writeHead(302, { location });
       return void res.end();
     }
@@ -85,11 +78,12 @@ const httpServer = createServer(async (req, res) => {
       return void res.end();
     }
 
-    // Backwards-compatible development endpoint. New clients should use POST /api/v1/sync.
     if (req.method === "GET" && url.pathname === "/sync/oura") {
+      const userId = await authenticatedUserId(req);
+      if (!userId) return void sendUnauthorized(res);
       const start = url.searchParams.get("start") ?? undefined;
       const end = url.searchParams.get("end") ?? undefined;
-      const result = await triggerSync(env.DEV_USER_ID, start, end);
+      const result = await triggerSync(userId, start, end);
       return void sendJson(res, 200, result);
     }
 
@@ -108,9 +102,9 @@ const httpServer = createServer(async (req, res) => {
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
 
-      // Development MVP: one configured user. Production must derive user identity
-      // from authenticated MCP authorization, never from model-supplied tool arguments.
-      const mcp = createHealthMcpServer(env.DEV_USER_ID);
+      const userId = await authenticatedUserId(req);
+      if (!userId) return void sendUnauthorized(res);
+      const mcp = createHealthMcpServer(userId);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true
@@ -136,5 +130,5 @@ httpServer.listen(env.PORT, () => {
   console.log(`AI Health Connection v${PRODUCT_VERSION} listening at ${env.BASE_URL}`);
   console.log(`REST API: ${env.BASE_URL}/api/v1/health`);
   console.log(`MCP endpoint: ${env.BASE_URL}/mcp`);
-  startOuraBackgroundSync(env.DEV_USER_ID);
+  startOuraBackgroundSync();
 });

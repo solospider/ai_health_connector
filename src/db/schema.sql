@@ -2,9 +2,27 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS users (
   id uuid PRIMARY KEY,
+  email text,
+  password_hash text,
   timezone text NOT NULL DEFAULT 'UTC',
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash text;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique
+  ON users ((lower(email))) WHERE email IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS sessions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash text NOT NULL UNIQUE,
+  expires_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_used_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 
 CREATE TABLE IF NOT EXISTS connections (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
