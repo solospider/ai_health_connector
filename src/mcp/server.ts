@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { env } from "../config.js";
 import { ensureOuraFresh, getOuraRawDiagnostic, getOuraSyncStatus } from "../oura/sync.js";
+import { getDailySpO2, getDetailedSleep, getHeartRateSeries, getWorkouts } from "../oura/details.js";
 import {
   comparePeriods,
   findAnomalies,
@@ -36,10 +37,10 @@ const dateString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD");
 
 export function createHealthMcpServer(userId = env.DEV_USER_ID) {
   const server = new McpServer(
-    { name: "personal-health-data", version: "0.5.0" },
+    { name: "personal-health-data", version: "0.6.0" },
     {
       instructions:
-        "Read-only personal health tools. Before serving health queries, the server refreshes Oura data when the local cache is older than 15 minutes. The sync-status tool itself does not trigger a refresh. The raw diagnostic tool checks Oura API availability versus local raw and normalized layers without returning raw health payloads. Report measurements and statistical trends accurately. Treat insufficient baseline data as uncertain and do not diagnose disease from wearable data."
+        "Read-only personal health tools. Before serving health queries, the server refreshes Oura data when the local cache is older than 15 minutes. The sync-status tool itself does not trigger a refresh. The raw diagnostic tool checks Oura API availability versus local raw and normalized layers without returning raw health payloads. Detailed sleep, SpO2, heart-rate, and workout tools read the user's synced Oura data. Report measurements and statistical trends accurately. Treat insufficient baseline data as uncertain and do not diagnose disease from wearable data."
     }
   );
 
@@ -74,6 +75,84 @@ export function createHealthMcpServer(userId = env.DEV_USER_ID) {
     },
     async ({ date }) => {
       const data = await getOuraRawDiagnostic(userId, date);
+      return {
+        content: [{ type: "text", text: JSON.stringify(data) }],
+        structuredContent: data
+      };
+    }
+  );
+
+  server.registerTool(
+    "get_detailed_sleep",
+    {
+      title: "Get detailed Oura sleep",
+      description:
+        "Returns detailed sleep data for one day, including bedtime, total/light/deep/REM sleep, awake time, latency, efficiency, HRV, heart rate, breathing rate, sleep/readiness scores, temperature deviation, and Oura contributors.",
+      inputSchema: { date: dateString },
+      annotations: { readOnlyHint: true, openWorldHint: false }
+    },
+    async ({ date }) => {
+      await refresh();
+      const data = await getDetailedSleep(userId, date);
+      return {
+        content: [{ type: "text", text: JSON.stringify(data) }],
+        structuredContent: data
+      };
+    }
+  );
+
+  server.registerTool(
+    "get_daily_spo2",
+    {
+      title: "Get daily Oura SpO2",
+      description: "Returns Oura's average blood-oxygen saturation recorded during sleep for one day, when available.",
+      inputSchema: { date: dateString },
+      annotations: { readOnlyHint: true, openWorldHint: false }
+    },
+    async ({ date }) => {
+      await refresh();
+      const data = await getDailySpO2(userId, date);
+      return {
+        content: [{ type: "text", text: JSON.stringify(data) }],
+        structuredContent: data
+      };
+    }
+  );
+
+  server.registerTool(
+    "get_heart_rate_series",
+    {
+      title: "Get Oura heart-rate series",
+      description:
+        "Returns timestamped Oura heart-rate samples for one day, including source plus daily min, max, and arithmetic average. Requires the heartrate scope.",
+      inputSchema: { date: dateString },
+      annotations: { readOnlyHint: true, openWorldHint: false }
+    },
+    async ({ date }) => {
+      await refresh();
+      const data = await getHeartRateSeries(userId, date);
+      return {
+        content: [{ type: "text", text: JSON.stringify(data) }],
+        structuredContent: data
+      };
+    }
+  );
+
+  server.registerTool(
+    "get_workouts",
+    {
+      title: "Get Oura workouts",
+      description:
+        "Returns synced Oura workouts across a date range, including activity, source, intensity, start/end time, calories, and distance when available.",
+      inputSchema: {
+        start_date: dateString,
+        end_date: dateString
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false }
+    },
+    async ({ start_date, end_date }) => {
+      await refresh();
+      const data = await getWorkouts(userId, start_date, end_date);
       return {
         content: [{ type: "text", text: JSON.stringify(data) }],
         structuredContent: data
