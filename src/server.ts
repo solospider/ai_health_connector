@@ -4,7 +4,8 @@ import { handleApiRequest } from "./api/routes.js";
 import { authenticatedUserId, sendUnauthorized } from "./auth/http.js";
 import { handleOAuthRequest } from "./auth/oauth.js";
 import { env } from "./config.js";
-import { createHealthMcpServer } from "./mcp/server.js";
+import { handleFamilyRequest } from "./family.js";
+import { createFamilyHealthMcpServer } from "./mcp/family-server.js";
 import { handleOnboardingRequest } from "./onboarding.js";
 import { startOuraBackgroundSync } from "./oura/background-sync.js";
 import { createOuraAuthorizationUrl, finishOuraAuthorization } from "./oura/oauth.js";
@@ -47,7 +48,7 @@ const httpServer = createServer(async (req, res) => {
             <section style="margin-top:36px;padding:24px;border:1px solid #e5e7eb;border-radius:16px">
               <h2 style="margin-top:0">Account</h2>
               <p>Status: <strong>${userId ? "authenticated" : "not authenticated"}</strong></p>
-              ${userId ? `<p>Oura: <strong>${connected ? oura?.status ?? "connected" : "not connected"}</strong></p>${connected ? `<p>Last sync: ${oura?.last_sync_at ?? "never"}</p><p><a href="/sync/oura">Sync last 90 days</a></p>` : `<p><a href="/auth/oura/start">Connect Oura</a></p>`}` : `<p><a href="/signup">Create an account &amp; connect Oura</a></p><p><a href="/login">Already have an account? Sign in</a></p>`}
+              ${userId ? `<p>Oura: <strong>${connected ? oura?.status ?? "connected" : "not connected"}</strong></p>${connected ? `<p>Last sync: ${oura?.last_sync_at ?? "never"}</p><p><a href="/sync/oura">Sync last 90 days</a></p>` : `<p><a href="/auth/oura/start">Connect Oura</a></p>`}<p><a href="/family">Manage family profiles</a></p>` : `<p><a href="/signup">Create an account &amp; connect Oura</a></p><p><a href="/login">Already have an account? Sign in</a></p>`}
             </section>
           </body>
         </html>`
@@ -59,6 +60,8 @@ const httpServer = createServer(async (req, res) => {
     }
 
     if (await handleOnboardingRequest(req, res, url)) return;
+
+    if (await handleFamilyRequest(req, res, url)) return;
 
     if (await handleOAuthRequest(req, res, url)) return;
 
@@ -111,7 +114,7 @@ const httpServer = createServer(async (req, res) => {
 
       const userId = await authenticatedUserId(req);
       if (!userId) return void sendUnauthorized(res);
-      const mcp = createHealthMcpServer(userId);
+      const mcp = createFamilyHealthMcpServer(userId);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true

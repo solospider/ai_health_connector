@@ -49,10 +49,10 @@ try {
   const tables = await client.query(
     `SELECT table_name FROM information_schema.tables
      WHERE table_schema='public' AND table_name = ANY($1::text[])`,
-    [["users", "sessions", "oauth_clients", "oauth_authorization_codes", "oauth_tokens", "connections", "oauth_states", "raw_provider_records", "daily_metrics", "heart_rate_samples"]]
+    [["users", "sessions", "oauth_clients", "oauth_authorization_codes", "oauth_tokens", "connections", "oauth_states", "raw_provider_records", "daily_metrics", "heart_rate_samples", "family_access"]]
   );
-  assert.equal(tables.rowCount, 10);
-  passed("database schema contains auth, OAuth, and health tables");
+  assert.equal(tables.rowCount, 11);
+  passed("database schema contains auth, OAuth, health, and family tables");
 
   const userRow = await client.query(`SELECT id, timezone FROM users WHERE id=$1`, [expectedUserId]);
   assert.equal(userRow.rowCount, 1);
@@ -63,7 +63,7 @@ try {
     assert.equal(response.status, 200);
     assert.equal(body.service, "AI Health Connection");
     assert.equal(body.status, "ok");
-    assert.equal(body.version, "1.2.0");
+    assert.equal(body.version, "1.3.0");
     passed("public health endpoint remains available");
   }
 
@@ -137,6 +137,29 @@ try {
   const userB = await register("bob@example.com");
   assert.notEqual(userA.user.id, userB.user.id);
   passed("two users can register independently");
+
+  {
+    const shareForm = new URLSearchParams({ owner_email: "alice@example.com", alias: "Heng" });
+    const share = await request("/family/share", {
+      method: "POST",
+      headers: { ...bearer(userB.access_token), "content-type": "application/x-www-form-urlencoded" },
+      body: shareForm.toString()
+    });
+    assert.equal(share.status, 200);
+    const familyRow = await client.query(
+      `SELECT owner_user_id, profile_user_id, alias, status FROM family_access WHERE owner_user_id=$1 AND profile_user_id=$2`,
+      [userA.user.id, userB.user.id]
+    );
+    assert.equal(familyRow.rowCount, 1);
+    assert.equal(familyRow.rows[0].alias, "Heng");
+    assert.equal(familyRow.rows[0].status, "active");
+
+    const familyPage = await request("/family", { headers: bearer(userA.access_token) });
+    assert.equal(familyPage.status, 200);
+    const familyHtml = await familyPage.text();
+    assert.match(familyHtml, /Heng/);
+    passed("family member can explicitly share a named health profile with another account");
+  }
 
   await client.query(
     `INSERT INTO connections(user_id, provider, access_token, refresh_token, scopes, token_expires_at)
@@ -261,7 +284,7 @@ try {
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.ok, true);
-    assert.equal(body.version, "1.2.0");
+    assert.equal(body.version, "1.3.0");
     passed("legacy health endpoint remains compatible");
   }
 
