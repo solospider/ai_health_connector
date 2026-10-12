@@ -5,6 +5,7 @@ import { authenticatedUserId, sendUnauthorized } from "./auth/http.js";
 import { handleOAuthRequest } from "./auth/oauth.js";
 import { env } from "./config.js";
 import { createHealthMcpServer } from "./mcp/server.js";
+import { handleOnboardingRequest } from "./onboarding.js";
 import { startOuraBackgroundSync } from "./oura/background-sync.js";
 import { createOuraAuthorizationUrl, finishOuraAuthorization } from "./oura/oauth.js";
 import { PRODUCT_VERSION, getConnections, triggerSync } from "./services/health-platform.js";
@@ -46,7 +47,7 @@ const httpServer = createServer(async (req, res) => {
             <section style="margin-top:36px;padding:24px;border:1px solid #e5e7eb;border-radius:16px">
               <h2 style="margin-top:0">Account</h2>
               <p>Status: <strong>${userId ? "authenticated" : "not authenticated"}</strong></p>
-              ${userId ? `<p>Oura: <strong>${connected ? oura?.status ?? "connected" : "not connected"}</strong></p>${connected ? `<p>Last sync: ${oura?.last_sync_at ?? "never"}</p><p><a href="/sync/oura">Sync last 90 days</a></p>` : `<p><a href="/auth/oura/start">Connect Oura</a></p>`}` : `<p>Use <code>POST /api/v1/auth/register</code> or <code>/api/v1/auth/login</code> to create a session. ChatGPT MCP connections use OAuth 2.1.</p>`}
+              ${userId ? `<p>Oura: <strong>${connected ? oura?.status ?? "connected" : "not connected"}</strong></p>${connected ? `<p>Last sync: ${oura?.last_sync_at ?? "never"}</p><p><a href="/sync/oura">Sync last 90 days</a></p>` : `<p><a href="/auth/oura/start">Connect Oura</a></p>`}` : `<p><a href="/signup">Create an account &amp; connect Oura</a></p><p><a href="/login">Already have an account? Sign in</a></p>`}
             </section>
           </body>
         </html>`
@@ -56,6 +57,8 @@ const httpServer = createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/healthz") {
       return void sendJson(res, 200, { ok: true, service: "AI Health Connection", version: PRODUCT_VERSION });
     }
+
+    if (await handleOnboardingRequest(req, res, url)) return;
 
     if (await handleOAuthRequest(req, res, url)) return;
 
@@ -76,8 +79,9 @@ const httpServer = createServer(async (req, res) => {
       const state = url.searchParams.get("state");
       const scope = url.searchParams.get("scope") ?? undefined;
       if (!code || !state) return void sendJson(res, 400, { error: "Missing code or state" });
-      await finishOuraAuthorization(code, state, scope);
-      res.writeHead(302, { location: "/" });
+      const userId = await finishOuraAuthorization(code, state, scope);
+      void triggerSync(userId).catch((syncError) => console.error("Initial Oura backfill failed", syncError));
+      res.writeHead(303, { location: "/setup/complete", "cache-control": "no-store" });
       return void res.end();
     }
 
