@@ -3,7 +3,6 @@ import { db } from "../db/pool.js";
 import { ouraGet } from "./client.js";
 
 type Collection<T = Record<string, unknown>> = { data: T[]; next_token?: string | null };
-
 type AnyRecord = Record<string, any>;
 
 export type OuraFreshnessResult = {
@@ -48,11 +47,15 @@ export type OuraRawDiagnostic = {
 
 const refreshInFlight = new Map<string, Promise<OuraFreshnessResult>>();
 
-async function fetchCollection(userId: string, endpoint: string, startDate: string, endDate: string) {
+async function fetchCollectionWithParams(
+  userId: string,
+  endpoint: string,
+  baseParams: Record<string, string>
+) {
   const all: AnyRecord[] = [];
   let nextToken: string | undefined;
   do {
-    const params: Record<string, string> = { start_date: startDate, end_date: endDate };
+    const params = { ...baseParams };
     if (nextToken) params.next_token = nextToken;
     const page = await ouraGet<Collection>(userId, `/v2/usercollection/${endpoint}`, params);
     all.push(...page.data);
@@ -61,16 +64,50 @@ async function fetchCollection(userId: string, endpoint: string, startDate: stri
   return all;
 }
 
+async function fetchCollection(userId: string, endpoint: string, startDate: string, endDate: string) {
+  return fetchCollectionWithParams(userId, endpoint, { start_date: startDate, end_date: endDate });
+}
+
+function addUtcDays(dateString: string, days: number) {
+  const date = new Date(`${dateString}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString();
+}
+
+async function fetchHeartRate(userId: string, startDate: string, endDate: string) {
+  return fetchCollectionWithParams(userId, "heartrate", {
+    start_datetime: `${startDate}T00:00:00.000Z`,
+    end_datetime: addUtcDays(endDate, 1)
+  });
+}
+
+async function grantedScopes(userId: string) {
+  const result = await db.query(
+    `SELECT scopes FROM connections WHERE user_id=$1 AND provider='oura' LIMIT 1`,
+    [userId]
+  );
+  const value = result.rows[0]?.scopes;
+  return new Set<string>(Array.isArray(value) ? value.map(String) : []);
+}
+
+function eventDate(record: AnyRecord): string | null {
+  if (typeof record.day === "string") return record.day;
+  if (typeof record.timestamp === "string") return record.timestamp.slice(0, 10);
+  if (typeof record.start_datetime === "string") return record.start_datetime.slice(0, 10);
+  return null;
+}
+
 async function saveRaw(userId: string, endpoint: string, records: AnyRecord[]) {
   for (const record of records) {
-    const externalId = record.id ? String(record.id) : `${record.day ?? record.timestamp ?? randomUUID()}`;
-    const day = record.day ?? null;
+    const externalId = record.id
+      ? String(record.id)
+      : String(record.timestamp ?? record.start_datetime ?? record.day ?? randomUUID());
     await db.query(
       `INSERT INTO raw_provider_records(user_id, provider, endpoint, external_id, event_date, payload)
        VALUES ($1,'oura',$2,$3,$4,$5)
        ON CONFLICT(user_id, provider, endpoint, external_id)
-       DO UPDATE SET payload=EXCLUDED.payload, fetched_at=now()`,
-      [userId, endpoint, externalId, day, record]
+       DO UPDATE SET event_date=EXCLUDED.event_date, payload=EXCLUDED.payload, fetched_at=now()`,
+      [userId, endpoint, externalId, eventDate(record), record]
     );
   }
 }
@@ -103,20 +140,29 @@ async function normalizeDaily(userId: string, endpoint: string, records: AnyReco
          activity_score=COALESCE(EXCLUDED.activity_score,daily_metrics.activity_score),
          temperature_deviation_c=COALESCE(EXCLUDED.temperature_deviation_c,daily_metrics.temperature_deviation_c),
          steps=COALESCE(EXCLUDED.steps,daily_metrics.steps), updated_at=now()`,
-      [userId, r.day, values.sleep_score ?? null, values.readiness_score ?? null,
-       values.activity_score ?? null, values.temperature_deviation_c ?? null, values.steps ?? null]
+      [
+        userId,
+        r.day,
+        values.sleep_score ?? null,
+        values.readiness_score ?? null,
+        values.activity_score ?? null,
+        values.temperature_deviation_c ?? null,
+        values.steps ?? null
+      ]
     );
   }
 }
 
 async function normalizeSleep(userId: string, records: AnyRecord[]) {
-  // Sleep endpoint can contain multiple sleep periods per day. Prefer the longest period.
   const byDay = new Map<string, AnyRecord>();
   for (const r of records) {
     if (!r.day) continue;
     const current = byDay.get(r.day);
-    if (!current || (r.total_sleep_duration ?? 0) > (current.total_sleep_duration ?? 0)) byDay.set(r.day, r);
+    if (!current || (r.total_sleep_duration ?? 0) > (current.total_sleep_duration ?? 0)) {
+      byDay.set(r.day, r);
+    }
   }
+
   for (const [day, r] of byDay) {
     await db.query(
       `INSERT INTO daily_metrics(user_id,date,source,total_sleep_seconds,deep_sleep_seconds,rem_sleep_seconds,
@@ -129,23 +175,55 @@ async function normalizeSleep(userId: string, records: AnyRecord[]) {
          efficiency=EXCLUDED.efficiency,
          average_hrv_ms=EXCLUDED.average_hrv_ms,
          resting_hr_bpm=EXCLUDED.resting_hr_bpm, updated_at=now()`,
-      [userId, day, n(r.total_sleep_duration), n(r.deep_sleep_duration), n(r.rem_sleep_duration),
-       n(r.efficiency), n(r.average_hrv), n(r.lowest_heart_rate ?? r.average_heart_rate)]
+      [
+        userId,
+        day,
+        n(r.total_sleep_duration),
+        n(r.deep_sleep_duration),
+        n(r.rem_sleep_duration),
+        n(r.efficiency),
+        n(r.average_hrv),
+        n(r.lowest_heart_rate ?? r.average_heart_rate)
+      ]
     );
   }
 }
 
 export async function syncOura(userId: string, startDate: string, endDate: string) {
-  const endpoints = ["daily_sleep", "daily_readiness", "daily_activity", "sleep"];
+  const scopes = await grantedScopes(userId);
   const counts: Record<string, number> = {};
-  for (const endpoint of endpoints) {
+
+  const dailyEndpoints = ["daily_sleep", "daily_readiness", "daily_activity", "sleep"];
+  for (const endpoint of dailyEndpoints) {
     const records = await fetchCollection(userId, endpoint, startDate, endDate);
     counts[endpoint] = records.length;
     await saveRaw(userId, endpoint, records);
     if (endpoint === "sleep") await normalizeSleep(userId, records);
     else await normalizeDaily(userId, endpoint, records);
   }
-  await db.query(`UPDATE connections SET last_sync_at=now() WHERE user_id=$1 AND provider='oura'`, [userId]);
+
+  if (scopes.has("spo2") || scopes.has("spo2Daily")) {
+    const records = await fetchCollection(userId, "daily_spo2", startDate, endDate);
+    counts.daily_spo2 = records.length;
+    await saveRaw(userId, "daily_spo2", records);
+  }
+
+  if (scopes.has("workout")) {
+    const records = await fetchCollection(userId, "workout", startDate, endDate);
+    counts.workout = records.length;
+    await saveRaw(userId, "workout", records);
+  }
+
+  if (scopes.has("heartrate")) {
+    const records = await fetchHeartRate(userId, startDate, endDate);
+    counts.heartrate = records.length;
+    await saveRaw(userId, "heartrate", records);
+  }
+
+  await db.query(
+    `UPDATE connections SET last_sync_at=now() WHERE user_id=$1 AND provider='oura'`,
+    [userId]
+  );
   return counts;
 }
 
@@ -206,10 +284,13 @@ export async function getOuraRawDiagnostic(userId: string, date: string): Promis
     localRaw[endpoint] = { available: localCount > 0, count: localCount };
 
     const normalizedAvailable =
-      endpoint === "daily_sleep" ? normalized.sleep_score :
-      endpoint === "daily_readiness" ? normalized.readiness_score :
-      endpoint === "daily_activity" ? normalized.activity_score :
-      normalized.sleep_duration;
+      endpoint === "daily_sleep"
+        ? normalized.sleep_score
+        : endpoint === "daily_readiness"
+          ? normalized.readiness_score
+          : endpoint === "daily_activity"
+            ? normalized.activity_score
+            : normalized.sleep_duration;
 
     if (apiCount === 0) {
       endpointStatus[endpoint] = "not_available_from_oura";
@@ -300,15 +381,6 @@ export async function getOuraSyncStatus(userId: string, maxAgeMinutes = 15): Pro
   };
 }
 
-/**
- * Keeps cached Oura data reasonably fresh for interactive MCP queries.
- *
- * - If the last sync is newer than maxAgeMinutes, no API call is made.
- * - If stale, only the most recent recentDays calendar days are re-fetched.
- * - If the connection has never been synced, initialSyncDays are fetched.
- * - Concurrent tool calls share one refresh promise, avoiding duplicate Oura API traffic.
- * - Refresh failures are reported to callers so cached data can still be used.
- */
 export async function ensureOuraFresh(
   userId: string,
   maxAgeMinutes = 15,
