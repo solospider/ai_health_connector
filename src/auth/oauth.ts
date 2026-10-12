@@ -240,7 +240,11 @@ async function handleAuthorize(req: IncomingMessage, res: ServerResponse, url: U
     redirect.searchParams.set("code", code);
     redirect.searchParams.set("state", validated.state);
     redirect.searchParams.set("iss", oauthIssuer());
-    res.writeHead(302, { location: redirect.toString(), "cache-control": "no-store" });
+    res.writeHead(303, {
+      location: redirect.toString(),
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff"
+    });
     return res.end();
   } catch (error) {
     const message = error instanceof Error ? error.message : "invalid_request";
