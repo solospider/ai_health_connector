@@ -4,9 +4,9 @@ A user-authorized personal health data layer that connects wearable data to AI c
 
 ## Current product stage
 
-**v0.8.0 — Product API Foundation**
+**v0.8.1 — Railway deployment + regression CI**
 
-The repository is still in **single-user development mode**. `DEV_USER_ID` represents the authenticated user. Do not deploy it as a public multi-user health service yet. Production must derive `user_id` from authenticated sessions/tokens and enforce per-user authorization at both REST and MCP boundaries.
+The repository is still in **single-user development/private-alpha mode**. `DEV_USER_ID` represents the authenticated user. Do not deploy it as a public multi-user health service yet. Production must derive `user_id` from authenticated sessions/tokens and enforce per-user authorization at both REST and MCP boundaries.
 
 ## Included
 
@@ -21,6 +21,8 @@ The repository is still in **single-user development mode**. `DEV_USER_ID` repre
 - Streamable HTTP MCP endpoint at `/mcp`
 - Product REST API under `/api/v1`
 - Basic product landing page and Oura connection status at `/`
+- Production build/start commands and Railway deployment configuration
+- GitHub Actions regression CI with PostgreSQL and production-server smoke tests
 
 ## Product endpoints
 
@@ -79,6 +81,8 @@ openssl rand -base64 32
 
 Put it in `TOKEN_ENCRYPTION_KEY_BASE64` and fill in the Oura credentials.
 
+`OURA_REDIRECT_URI` is optional; when omitted it is derived from `BASE_URL` as `/auth/oura/callback`.
+
 ## 3. Run Postgres
 
 ```bash
@@ -111,7 +115,38 @@ curl http://localhost:8787/api/v1/sync/status
 curl -X POST http://localhost:8787/api/v1/sync
 ```
 
-## 6. Test MCP locally
+## 6. Production build
+
+```bash
+npm run typecheck
+npm run build
+npm run db:init:prod
+npm run start
+```
+
+## 7. Regression CI
+
+Pull requests and pushes to `main` run `.github/workflows/ci.yml`. The workflow uses a real PostgreSQL service and checks:
+
+- clean `npm ci`
+- TypeScript typecheck
+- production compilation and required build artifacts
+- production database initialization twice to verify idempotency
+- production server startup
+- REST health/user/connection/sync-status behavior
+- API 404 and sync input validation
+- Oura OAuth authorization URL, PKCE state persistence, and callback validation
+- legacy health endpoint compatibility
+
+The local smoke script can also be run against a configured test database/server:
+
+```bash
+npm run test:smoke
+```
+
+Live Oura token exchange and health-data sync are intentionally not run in CI because they require user credentials and provider access.
+
+## 8. Test MCP locally
 
 ```bash
 npx @modelcontextprotocol/inspector@latest
@@ -138,9 +173,9 @@ Representative tools include:
 - `get_health_context`
 - `find_anomalies`
 
-## 7. Connect to ChatGPT during development
+## 9. Railway deployment
 
-Expose port 8787 through an HTTPS tunnel, then add the resulting `https://.../mcp` endpoint as a custom MCP server / plugin in ChatGPT.
+See `RAILWAY_DEPLOYMENT.md` for the Railway project, PostgreSQL, environment-variable, HTTPS domain, and Oura callback setup.
 
 ## Next engineering steps
 
