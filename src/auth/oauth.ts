@@ -239,6 +239,7 @@ async function handleAuthorize(req: IncomingMessage, res: ServerResponse, url: U
     const redirect = new URL(validated.redirectUri);
     redirect.searchParams.set("code", code);
     redirect.searchParams.set("state", validated.state);
+    redirect.searchParams.set("iss", oauthIssuer());
     res.writeHead(302, { location: redirect.toString(), "cache-control": "no-store" });
     return res.end();
   } catch (error) {
@@ -314,7 +315,8 @@ export async function handleOAuthRequest(req: IncomingMessage, res: ServerRespon
       grant_types_supported: ["authorization_code", "refresh_token"],
       token_endpoint_auth_methods_supported: ["none"],
       code_challenge_methods_supported: ["S256"],
-      scopes_supported: OAUTH_SCOPES
+      scopes_supported: OAUTH_SCOPES,
+      authorization_response_iss_parameter_supported: true
     });
     return true;
   }
