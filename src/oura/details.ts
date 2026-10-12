@@ -113,7 +113,41 @@ export async function getDailySpO2(userId: string, date: string) {
     date,
     available: Boolean(record),
     average_spo2_percent: asNumber(record?.spo2_percentage?.average),
+    breathing_disturbance_index: asNumber(record?.breathing_disturbance_index),
     source_records: records.length
+  };
+}
+
+export async function getRespiratorySummary(userId: string, date: string) {
+  const [spo2Records, sleepRecords] = await Promise.all([
+    rawRecords(userId, "daily_spo2", date),
+    rawRecords(userId, "sleep", date)
+  ]);
+
+  const spo2 = spo2Records[0] ?? null;
+  const sleep = chooseLongestSleep(sleepRecords);
+
+  return {
+    date,
+    available: Boolean(spo2 || sleep),
+    average_spo2_percent: asNumber(spo2?.spo2_percentage?.average),
+    breathing_disturbance_index: asNumber(spo2?.breathing_disturbance_index),
+    average_breath_bpm: asNumber(sleep?.average_breath),
+    bedtime_start: asString(sleep?.bedtime_start),
+    bedtime_end: asString(sleep?.bedtime_end),
+    total_sleep_seconds: asNumber(sleep?.total_sleep_duration),
+    average_heart_rate_bpm: asNumber(sleep?.average_heart_rate),
+    lowest_heart_rate_bpm: asNumber(sleep?.lowest_heart_rate),
+    average_hrv_ms: asNumber(sleep?.average_hrv),
+    source_records: {
+      daily_spo2: spo2Records.length,
+      sleep: sleepRecords.length
+    },
+    limitations: {
+      spo2_is_daily_average: true,
+      breathing_disturbance_is_daily_index: true,
+      minute_level_spo2_not_available_from_this_endpoint: true
+    }
   };
 }
 
