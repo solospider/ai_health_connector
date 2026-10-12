@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import pg from "pg";
+import { heartRateWindows } from "../dist/oura/sync.js";
 
 const baseUrl = process.env.BASE_URL ?? "http://127.0.0.1:8787";
 const expectedUserId = process.env.DEV_USER_ID ?? "00000000-0000-0000-0000-000000000001";
@@ -31,6 +32,16 @@ const client = new pg.Client({ connectionString: databaseUrl });
 await client.connect();
 
 try {
+  {
+    const windows = heartRateWindows("2026-07-14", "2026-10-11");
+    assert.deepEqual(windows, [
+      { startDate: "2026-07-14", endDate: "2026-08-12" },
+      { startDate: "2026-08-13", endDate: "2026-09-11" },
+      { startDate: "2026-09-12", endDate: "2026-10-11" }
+    ]);
+    passed("90-day heartrate range is chunked into <=30-day windows");
+  }
+
   const tables = await client.query(
     `SELECT table_name FROM information_schema.tables
      WHERE table_schema='public' AND table_name = ANY($1::text[])`,
@@ -49,7 +60,7 @@ try {
     assert.equal(response.status, 200);
     assert.equal(body.service, "AI Health Connection");
     assert.equal(body.status, "ok");
-    assert.equal(body.version, "0.9.0");
+    assert.equal(body.version, "0.9.1");
     assert.ok(Number.isFinite(Date.parse(body.timestamp)));
     passed("GET /api/v1/health");
   }
@@ -143,7 +154,7 @@ try {
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.ok, true);
-    assert.equal(body.version, "0.9.0");
+    assert.equal(body.version, "0.9.1");
     passed("legacy /healthz remains compatible");
   }
 
