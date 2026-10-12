@@ -1,0 +1,8 @@
+[build]
+buildCommand = "npm run build"
+
+[deploy]
+preDeployCommand = ["npm run db:init:prod"]
+startCommand = "npm run start"
+healthcheckPath = "/api/v1/health"
+healthcheckTimeout = 60
