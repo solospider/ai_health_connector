@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    name: Typecheck, build, DB, API smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: health_ai_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d health_ai_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      PORT: 8787
+      BASE_URL: http://127.0.0.1:8787
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/health_ai_test
+      OURA_CLIENT_ID: ci-test-client
+      OURA_CLIENT_SECRET: ci-test-secret
+      OURA_SCOPES: daily heartrate workout spo2
+      TOKEN_ENCRYPTION_KEY_BASE64: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      DEV_USER_ID: 00000000-0000-0000-0000-000000000001
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Production build
+        run: npm run build
+
+      - name: Verify production artifacts
+        run: |
+          test -f dist/server.js
+          test -f dist/db/init.js
+          test -f dist/db/schema.sql
+
+      - name: Initialize database
+        run: npm run db:init:prod
+
+      - name: Verify database initialization is idempotent
+        run: npm run db:init:prod
+
+      - name: Start production server
+        run: |
+          npm run start > /tmp/ai-health-server.log 2>&1 &
+          echo $! > /tmp/ai-health-server.pid
+
+      - name: Wait for health endpoint
+        run: |
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8787/api/v1/health > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/ai-health-server.log
+          exit 1
+
+      - name: Run smoke regression suite
+        run: npm run test:smoke
+
+      - name: Show server log on failure
+        if: failure()
+        run: cat /tmp/ai-health-server.log || true
+
+      - name: Stop production server
+        if: always()
+        run: |
+          if [ -f /tmp/ai-health-server.pid ]; then
+            kill "$(cat /tmp/ai-health-server.pid)" || true
+          fi
